@@ -1,4 +1,4 @@
-<!-- provenance: agent-authored; created: 2026-07-27 -->
+<!-- provenance: agent-authored; created: 2026-07-27; updated: 2026-07-27 -->
 # quintfmt
 
 `quintfmt` is a conservative, comment-preserving formatter for
@@ -9,6 +9,17 @@ This initial release provides canonical spacing/indentation and restrained
 local alignment for declarations, record fields, assignments, and relational
 action clauses. Alignment never crosses comments, blank lines, nested layout,
 or a twelve-column padding cap.
+
+Declaration alignment keeps the colon with its name and aligns only type values
+within a local `const`/`var` group:
+
+```quint
+const maxAttempts: int
+var   owner:       str
+var   phase:       Phase
+
+def retryAllowed(s): bool
+```
 
 ## Use
 

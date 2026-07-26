@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFile, writeFile } from "node:fs/promises";
+import { chmod, lstat, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { format } from "./api.js";
 
 async function main(): Promise<void> {
@@ -24,7 +24,13 @@ async function main(): Promise<void> {
     }
   } else {
     let changed = false;
+    const prepared: Array<{ file: string; source: string; formatted: string }> = [];
     for (const file of files) {
+      if (write && (await lstat(file)).isSymbolicLink()) {
+        console.error(`${file}: QFMT_SYMLINK: refusing to replace a symbolic link`);
+        process.exitCode = 2;
+        continue;
+      }
       const source = await readFile(file, "utf8");
       const result = format(source);
       if (!result.ok) {
@@ -33,10 +39,29 @@ async function main(): Promise<void> {
         continue;
       }
       if (result.formatted !== source) changed = true;
-      if (write && result.formatted !== source) await writeFile(file, result.formatted, "utf8");
-      if (!write && !check) process.stdout.write(result.formatted);
+      prepared.push({ file, source, formatted: result.formatted });
     }
-    if (check && changed && process.exitCode !== 2) process.exitCode = 1;
+    if (process.exitCode === 2) return;
+    if (write) {
+      for (const item of prepared) if (item.formatted !== item.source) await writeAtomically(item.file, item.formatted);
+    } else if (!check) {
+      for (const item of prepared) process.stdout.write(item.formatted);
+    } else if (changed) {
+      process.exitCode = 1;
+    }
+  }
+}
+
+async function writeAtomically(file: string, content: string): Promise<void> {
+  const temporary = `${file}.quintfmt-${process.pid}-${Math.random().toString(16).slice(2)}`;
+  const original = await stat(file);
+  try {
+    await writeFile(temporary, content, { encoding: "utf8", flag: "wx", mode: original.mode });
+    await chmod(temporary, original.mode);
+    await rename(temporary, file);
+  } catch (error) {
+    await unlink(temporary).catch(() => undefined);
+    throw error;
   }
 }
 

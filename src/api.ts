@@ -1,6 +1,26 @@
 import { CharStreams, CommonTokenStream, Token } from "antlr4ts";
+import type { ParseTree } from "antlr4ts/tree/ParseTree";
 import { QuintLexer } from "./generated/vendor/quint/QuintLexer.js";
-import { QuintParser } from "./generated/vendor/quint/QuintParser.js";
+import {
+  AssumeContext,
+  BracesContext,
+  IfElseContext,
+  ImportDefContext,
+  InstanceContext,
+  LambdaConsContext,
+  LetInContext,
+  ListAppContext,
+  ListContext,
+  MatchContext,
+  PairContext,
+  PureValDestructuringContext,
+  QuintParser,
+  TupleContext,
+  TypeDefsContext,
+  UnitContext,
+  ValDestructuringContext,
+  ExportDefContext,
+} from "./generated/vendor/quint/QuintParser.js";
 
 export interface FormatOptions {
   indentWidth?: number;
@@ -9,7 +29,7 @@ export interface FormatOptions {
 }
 
 export interface Diagnostic {
-  code: "QFMT_PARSE" | "QFMT_INTERNAL";
+  code: "QFMT_PARSE" | "QFMT_UNSUPPORTED" | "QFMT_INTERNAL";
   line: number;
   column: number;
   message: string;
@@ -25,9 +45,9 @@ const defaultOptions: Required<FormatOptions> = {
   alignment: "local",
 };
 
-type Line = { source: string; tokens: Token[]; comments: Token[]; barrier: boolean };
+type Line = { source: string; tokens: Token[]; comments: Token[]; barrier: boolean; verbatim: boolean };
 
-function parse(source: string): { tokens: Token[]; diagnostics: Diagnostic[] } {
+function parse(source: string): { tree: ParseTree; tokens: Token[]; diagnostics: Diagnostic[] } {
   const lexer = new QuintLexer(CharStreams.fromString(source));
   const diagnostics: Diagnostic[] = [];
   lexer.removeErrorListeners();
@@ -44,7 +64,7 @@ function parse(source: string): { tokens: Token[]; diagnostics: Diagnostic[] } {
       diagnostics.push({ code: "QFMT_PARSE", line, column: column + 1, message });
     },
   });
-  parser.modules();
+  const tree = parser.modules();
   const tapeLexer = new QuintLexer(CharStreams.fromString(source));
   tapeLexer.removeErrorListeners();
   tapeLexer.addErrorListener({
@@ -52,7 +72,7 @@ function parse(source: string): { tokens: Token[]; diagnostics: Diagnostic[] } {
       diagnostics.push({ code: "QFMT_PARSE", line, column: column + 1, message });
     },
   });
-  return { tokens: tapeLexer.getAllTokens().filter((token) => token.type !== Token.EOF), diagnostics };
+  return { tree, tokens: tapeLexer.getAllTokens().filter((token) => token.type !== Token.EOF), diagnostics };
 }
 
 function isComment(token: Token): boolean {
@@ -61,22 +81,41 @@ function isComment(token: Token): boolean {
 
 function makeLines(source: string, tokens: Token[]): Line[] {
   const sourceLines = source.replace(/\r\n/g, "\n").split("\n");
-  const lines: Line[] = sourceLines.map((text) => ({ source: text, tokens: [], comments: [], barrier: false }));
+  const lines: Line[] = sourceLines.map((text) => ({ source: text, tokens: [], comments: [], barrier: false, verbatim: false }));
   for (const token of tokens) {
     const line = lines[token.line - 1];
     if (!line) continue;
     if (isComment(token)) {
       line.comments.push(token);
       line.barrier = true;
-      if ((token.text ?? "").includes("\n")) {
+      if (token.type === QuintLexer.COMMENT) line.verbatim = true;
+      if (token.type === QuintLexer.COMMENT && (token.text ?? "").includes("\n")) {
         const end = token.line + (token.text ?? "").split("\n").length - 1;
-        for (let index = token.line; index < end && lines[index]; index += 1) lines[index].barrier = true;
+        for (let index = token.line - 1; index < end && lines[index]; index += 1) {
+          lines[index].barrier = true;
+          lines[index].verbatim = true;
+        }
       }
     } else if (token.channel === Token.DEFAULT_CHANNEL) {
       line.tokens.push(token);
     }
   }
   return lines;
+}
+
+function unsupportedNode(node: ParseTree): string | null {
+  const unsupported = [
+    AssumeContext, InstanceContext, TypeDefsContext, ImportDefContext, ExportDefContext,
+    ValDestructuringContext, PureValDestructuringContext, MatchContext, IfElseContext,
+    LetInContext, LambdaConsContext, ListContext, ListAppContext, TupleContext, UnitContext,
+    PairContext, BracesContext,
+  ];
+  if (unsupported.some((kind) => node instanceof kind)) return node.constructor.name;
+  for (let index = 0; index < node.childCount; index += 1) {
+    const found = unsupportedNode(node.getChild(index));
+    if (found) return found;
+  }
+  return null;
 }
 
 function needsSpace(previous: string, current: string): boolean {
@@ -113,15 +152,17 @@ function startsClose(tokens: Token[]): boolean {
 }
 
 function splitComment(comment: Token): string {
-  return (comment.text ?? "").replace(/\r?\n$/, "").trimEnd();
+  return (comment.text ?? "").replace(/\r?\n$/, "");
 }
 
 function alignDeclarations(lines: string[], maximumPadding: number): string[] {
   const match = lines.map((line) => /^(const|var)\s+([A-Za-z_][\w:]*)\s*:\s*(.+)$/.exec(line));
   if (match.some((item) => !item)) return lines;
-  const width = Math.max(...match.map((item) => item![2].length));
-  if (match.some((item) => width - item![2].length > maximumPadding)) return lines;
-  return match.map((item) => `${item![1]} ${item![2].padEnd(width)} : ${item![3]}`);
+  const qualifierWidth = Math.max(...match.map((item) => item![1].length));
+  const heads = match.map((item) => `${item![1].padEnd(qualifierWidth)} ${item![2]}:`);
+  const typeColumn = Math.max(...heads.map((head) => head.length));
+  if (heads.some((head) => typeColumn - head.length > maximumPadding)) return lines;
+  return match.map((item, index) => `${heads[index].padEnd(typeColumn)} ${item![3]}`);
 }
 
 function alignDelimited(lines: string[], expression: RegExp, maximumPadding: number): string[] {
@@ -154,8 +195,14 @@ function alignIslands(rendered: string[], barriers: boolean[], maximumPadding: n
   for (let start = 0; start < output.length;) {
     const kind = !barriers[start] ? alignmentKind(output[start]) : null;
     if (!kind) { start += 1; continue; }
+    const indentation = output[start].match(/^\s*/)?.[0] ?? "";
     let end = start + 1;
-    while (end < output.length && !barriers[end] && alignmentKind(output[end]) === kind) end += 1;
+    while (
+      end < output.length
+      && !barriers[end]
+      && alignmentKind(output[end]) === kind
+      && (output[end].match(/^\s*/)?.[0] ?? "") === indentation
+    ) end += 1;
     const island = output.slice(start, end);
     const prefixes = island.map((line) => line.match(/^\s*/)?.[0] ?? "");
     const aligned = alignLocal(island.map((line) => line.trimStart()), maximumPadding)
@@ -172,15 +219,22 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
   try {
     const parsed = parse(source);
     if (parsed.diagnostics.length) return { ok: false, formatted: null, diagnostics: parsed.diagnostics };
+    const unsupported = unsupportedNode(parsed.tree);
+    if (unsupported) return { ok: false, formatted: null, diagnostics: [{ code: "QFMT_UNSUPPORTED", line: 1, column: 1, message: `unsupported Quint syntax in first formatter slice: ${unsupported}` }] };
     const lines = makeLines(source, parsed.tokens);
     const rendered: string[] = [];
     const barriers: boolean[] = [];
     let depth = 0;
     for (const line of lines) {
+      if (line.verbatim) {
+        rendered.push(line.source);
+        barriers.push(true);
+        continue;
+      }
       if (!line.tokens.length) {
         const multilineComment = line.comments.some((comment) => comment.type === QuintLexer.COMMENT && (comment.text ?? "").includes("\n"));
         rendered.push(line.comments.length && !multilineComment
-          ? `${" ".repeat(depth * settings.indentWidth)}${line.source.trim()}`
+          ? `${" ".repeat(depth * settings.indentWidth)}${line.source.trimStart()}`
           : line.source.trimEnd());
         barriers.push(line.barrier || Boolean(line.source.trim()));
         continue;
@@ -191,19 +245,19 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
         continue;
       }
       if (line.tokens[0]?.type === QuintLexer.HASHBANG_LINE) {
-        rendered.push(line.source.trimEnd());
+        rendered.push(line.source);
         barriers.push(true);
         continue;
       }
       if (line.tokens.length === 1 && line.tokens[0]?.type === QuintLexer.DOCCOMMENT) {
-        rendered.push(line.source.trimEnd());
+        rendered.push(line.source);
         barriers.push(true);
         continue;
       }
       if (startsClose(line.tokens)) depth = Math.max(0, depth - 1);
       let value = `${" ".repeat(depth * settings.indentWidth)}${renderTokens(line.tokens)}`;
       if (line.comments.length) value += `  ${line.comments.map(splitComment).join(" ")}`;
-      rendered.push(value.trimEnd());
+      rendered.push(line.comments.length ? value : value.trimEnd());
       barriers.push(line.barrier);
       depth = Math.max(0, depth + braceDelta(line.tokens) + (startsClose(line.tokens) ? 1 : 0));
     }
@@ -213,7 +267,10 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
       result.push(line);
       return result;
     }, []);
-    return { ok: true, formatted: `${compact.join("\n").replace(/\n+$/, "")}\n`, diagnostics: [] };
+    const formatted = `${compact.join("\n").replace(/\n+$/, "")}\n`;
+    const verification = parse(formatted);
+    if (verification.diagnostics.length) return { ok: false, formatted: null, diagnostics: verification.diagnostics };
+    return { ok: true, formatted, diagnostics: [] };
   } catch (error) {
     return { ok: false, formatted: null, diagnostics: [{ code: "QFMT_INTERNAL", line: 1, column: 1, message: error instanceof Error ? error.message : String(error) }] };
   }
