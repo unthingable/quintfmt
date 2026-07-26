@@ -34,6 +34,10 @@ node dist/src/cli.js --write Spec.qnt
 `--write` and `--check` are mutually exclusive. With no file argument,
 `quintfmt` reads stdin and writes formatted source to stdout.
 
+Use `--declaration-alignment types` (the default), `columns`, or `off` to
+choose declaration alignment. The same setting is available through the
+`format(source, { declarationAlignment })` API.
+
 ## Guarantees
 
 - significant token text and order are preserved;

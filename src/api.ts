@@ -26,6 +26,7 @@ export interface FormatOptions {
   indentWidth?: number;
   maxAlignmentPadding?: number;
   alignment?: "local" | "off";
+  declarationAlignment?: "types" | "columns" | "off";
 }
 
 export interface Diagnostic {
@@ -43,6 +44,7 @@ const defaultOptions: Required<FormatOptions> = {
   indentWidth: 2,
   maxAlignmentPadding: 12,
   alignment: "local",
+  declarationAlignment: "types",
 };
 
 type Line = { source: string; tokens: Token[]; comments: Token[]; barrier: boolean; verbatim: boolean };
@@ -155,11 +157,12 @@ function splitComment(comment: Token): string {
   return (comment.text ?? "").replace(/\r?\n$/, "");
 }
 
-function alignDeclarations(lines: string[], maximumPadding: number): string[] {
+function alignDeclarations(lines: string[], maximumPadding: number, mode: Required<FormatOptions>["declarationAlignment"]): string[] {
   const match = lines.map((line) => /^(const|var)\s+([A-Za-z_][\w:]*)\s*:\s*(.+)$/.exec(line));
   if (match.some((item) => !item)) return lines;
-  const qualifierWidth = Math.max(...match.map((item) => item![1].length));
-  const heads = match.map((item) => `${item![1].padEnd(qualifierWidth)} ${item![2]}:`);
+  if (mode === "off") return lines;
+  const qualifierWidth = mode === "columns" ? Math.max(...match.map((item) => item![1].length)) : 0;
+  const heads = match.map((item) => `${mode === "columns" ? item![1].padEnd(qualifierWidth) : item![1]} ${item![2]}:`);
   const typeColumn = Math.max(...heads.map((head) => head.length));
   if (heads.some((head) => typeColumn - head.length > maximumPadding)) return lines;
   return match.map((item, index) => `${heads[index].padEnd(typeColumn)} ${item![3]}`);
@@ -173,9 +176,9 @@ function alignDelimited(lines: string[], expression: RegExp, maximumPadding: num
   return match.map((item) => `${item![1].padEnd(width)} ${item![2]} ${item![3]}`);
 }
 
-function alignLocal(lines: string[], maximumPadding: number): string[] {
+function alignLocal(lines: string[], maximumPadding: number, declarationAlignment: Required<FormatOptions>["declarationAlignment"]): string[] {
   if (lines.length < 2) return lines;
-  const declarations = alignDeclarations(lines, maximumPadding);
+  const declarations = alignDeclarations(lines, maximumPadding, declarationAlignment);
   if (declarations !== lines) return declarations;
   const records = alignDelimited(lines, /^([A-Za-z_][\w]*)\s*(:)\s*(.+,?)$/, maximumPadding);
   if (records !== lines) return records;
@@ -190,7 +193,12 @@ function alignmentKind(line: string): "declaration" | "record" | "relation" | nu
   return null;
 }
 
-function alignIslands(rendered: string[], barriers: boolean[], maximumPadding: number): string[] {
+function alignIslands(
+  rendered: string[],
+  barriers: boolean[],
+  maximumPadding: number,
+  declarationAlignment: Required<FormatOptions>["declarationAlignment"],
+): string[] {
   const output = [...rendered];
   for (let start = 0; start < output.length;) {
     const kind = !barriers[start] ? alignmentKind(output[start]) : null;
@@ -205,7 +213,7 @@ function alignIslands(rendered: string[], barriers: boolean[], maximumPadding: n
     ) end += 1;
     const island = output.slice(start, end);
     const prefixes = island.map((line) => line.match(/^\s*/)?.[0] ?? "");
-    const aligned = alignLocal(island.map((line) => line.trimStart()), maximumPadding)
+    const aligned = alignLocal(island.map((line) => line.trimStart()), maximumPadding, declarationAlignment)
       .map((line, index) => `${prefixes[index]}${line}`);
     output.splice(start, island.length, ...aligned);
     start = end;
@@ -261,7 +269,9 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
       barriers.push(line.barrier);
       depth = Math.max(0, depth + braceDelta(line.tokens) + (startsClose(line.tokens) ? 1 : 0));
     }
-    const aligned = settings.alignment === "local" ? alignIslands(rendered, barriers, settings.maxAlignmentPadding) : rendered;
+    const aligned = settings.alignment === "local"
+      ? alignIslands(rendered, barriers, settings.maxAlignmentPadding, settings.declarationAlignment)
+      : rendered;
     const compact = aligned.reduce<string[]>((result, line) => {
       if (!line.trim() && !result.at(-1)?.trim()) return result;
       result.push(line);

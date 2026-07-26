@@ -2,11 +2,39 @@
 import { chmod, lstat, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { format } from "./api.js";
 
+function parseArguments(args: string[]): { files: string[]; write: boolean; check: boolean; declarationAlignment: "types" | "columns" | "off" } {
+  let write = false;
+  let check = false;
+  let declarationAlignment: "types" | "columns" | "off" = "types";
+  const files: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index]!;
+    if (argument === "--write" || argument === "-w") write = true;
+    else if (argument === "--check") check = true;
+    else if (argument === "--declaration-alignment") {
+      const value = args[++index];
+      if (value !== "types" && value !== "columns" && value !== "off") throw new Error("--declaration-alignment must be types, columns, or off");
+      declarationAlignment = value;
+    } else if (argument.startsWith("--declaration-alignment=")) {
+      const value = argument.slice("--declaration-alignment=".length);
+      if (value !== "types" && value !== "columns" && value !== "off") throw new Error("--declaration-alignment must be types, columns, or off");
+      declarationAlignment = value;
+    } else if (argument.startsWith("-")) throw new Error(`unknown option: ${argument}`);
+    else files.push(argument);
+  }
+  return { files, write, check, declarationAlignment };
+}
+
 async function main(): Promise<void> {
-  const args = process.argv.slice(2);
-  const write = args.includes("--write") || args.includes("-w");
-  const check = args.includes("--check");
-  const files = args.filter((arg) => !arg.startsWith("-"));
+  let parsedArguments: ReturnType<typeof parseArguments>;
+  try {
+    parsedArguments = parseArguments(process.argv.slice(2));
+  } catch (error) {
+    console.error(`quintfmt: ${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = 2;
+    return;
+  }
+  const { files, write, check, declarationAlignment } = parsedArguments;
 
   if (write && check) {
     console.error("quintfmt: --write and --check cannot be combined");
@@ -15,7 +43,7 @@ async function main(): Promise<void> {
     process.stdin.setEncoding("utf8");
     let source = "";
     for await (const chunk of process.stdin) source += chunk;
-    const result = format(source);
+    const result = format(source, { declarationAlignment });
     if (!result.ok) {
       for (const diagnostic of result.diagnostics) console.error(`${diagnostic.line}:${diagnostic.column}: ${diagnostic.code}: ${diagnostic.message}`);
       process.exitCode = 2;
@@ -32,7 +60,7 @@ async function main(): Promise<void> {
         continue;
       }
       const source = await readFile(file, "utf8");
-      const result = format(source);
+      const result = format(source, { declarationAlignment });
       if (!result.ok) {
         for (const diagnostic of result.diagnostics) console.error(`${file}:${diagnostic.line}:${diagnostic.column}: ${diagnostic.code}: ${diagnostic.message}`);
         process.exitCode = 2;

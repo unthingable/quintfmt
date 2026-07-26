@@ -7,7 +7,7 @@ test("aligns local declarations without changing comments", () => {
   const result = format(source);
   assert.equal(result.ok, true);
   if (!result.ok) return;
-  assert.equal(result.formatted, `module Demo {\n  var   owner:       str\n  const maxAttempts: int\n  // barrier\n  var x: int\n}\n`);
+  assert.equal(result.formatted, `module Demo {\n  var owner:         str\n  const maxAttempts: int\n  // barrier\n  var x: int\n}\n`);
 });
 
 test("keeps declaration colons attached while aligning local type values", () => {
@@ -16,9 +16,20 @@ test("keeps declaration colons attached while aligning local type values", () =>
   assert.equal(result.ok, true);
   if (!result.ok) return;
   assert.match(result.formatted, /const maxAttempts: int/);
-  assert.match(result.formatted, /var   owner:\s+str/);
-  assert.match(result.formatted, /var   phase:\s+Phase/);
+  assert.match(result.formatted, /var owner:\s+str/);
+  assert.match(result.formatted, /var phase:\s+Phase/);
   assert.match(result.formatted, /def retryAllowed\(s\): bool = s\.retries < maxAttempts/);
+});
+
+test("offers columns and off declaration alignment modes", () => {
+  const source = `module Demo {\nconst maximum:int\nvar x:int\n}\n`;
+  const columns = format(source, { declarationAlignment: "columns" });
+  const off = format(source, { declarationAlignment: "off" });
+  assert.equal(columns.ok, true);
+  assert.equal(off.ok, true);
+  if (!columns.ok || !off.ok) return;
+  assert.match(columns.formatted, /var   x:/);
+  assert.match(off.formatted, /const maximum: int\n  var x: int/);
 });
 
 test("aligns record fields and action relations locally", () => {
