@@ -13,6 +13,26 @@ The formatter's priority order is:
 3. make local structure easy to scan;
 4. permit a few team-level visual preferences without making style unstable.
 
+## `.quintfmt` files
+
+`quintfmt` searches from the current working directory upward for a file named
+`.quintfmt`. The file is JSON, and its settings apply to every input in that
+invocation. Use `--config path/to/file` to select a file explicitly, or
+`--no-config` to ignore discovery.
+
+```json
+{
+  "indentWidth": 2,
+  "alignment": "local",
+  "declarationAlignment": "types",
+  "maxAlignmentPadding": 12
+}
+```
+
+Unknown keys, malformed JSON, and invalid values are errors. This is
+intentional: a typo must never silently change—or fail to change—a repository's
+formatting policy.
+
 ## What is configurable today
 
 The public API accepts these options:
@@ -31,7 +51,7 @@ format(source, {
 | `indentWidth` | positive integer | `2` | Spaces used for block indentation. |
 | `alignment` | `local`, `off` | `local` | Enables or disables all local alignment. |
 | `declarationAlignment` | `types`, `columns`, `off` | `types` | Controls alignment within consecutive `const`/`var` groups. |
-| `maxAlignmentPadding` | positive integer | `12` | Splits a local alignment group rather than adding excessive whitespace. |
+| `maxAlignmentPadding` | positive integer | `12` | Maximum spaces added before a column. The formatter splits or leaves a local group unaligned rather than creating an excessive gap. |
 
 The CLI currently exposes declaration alignment:
 
@@ -39,6 +59,8 @@ The CLI currently exposes declaration alignment:
 quintfmt --declaration-alignment types Spec.qnt
 quintfmt --declaration-alignment columns Spec.qnt
 quintfmt --declaration-alignment off Spec.qnt
+quintfmt --config .quintfmt Spec.qnt
+quintfmt --no-config Spec.qnt
 ```
 
 ## Declaration alignment

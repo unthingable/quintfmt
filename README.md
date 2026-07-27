@@ -39,7 +39,8 @@ choose declaration alignment. The same setting is available through the
 `format(source, { declarationAlignment })` API.
 
 See [Configuration and style](docs/CONFIGURATION.md) for the complete current
-option contract and proposed declaration-spacing policy.
+option contract, `.quintfmt` project files, and proposed declaration-spacing
+policy.
 
 ## Guarantees
 

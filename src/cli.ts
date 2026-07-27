@@ -1,16 +1,35 @@
 #!/usr/bin/env node
 import { chmod, lstat, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { format } from "./api.js";
+import { ConfigError, findConfig, loadConfig } from "./config.js";
 
-function parseArguments(args: string[]): { files: string[]; write: boolean; check: boolean; declarationAlignment: "types" | "columns" | "off" } {
+function parseArguments(args: string[]): {
+  files: string[];
+  write: boolean;
+  check: boolean;
+  declarationAlignment?: "types" | "columns" | "off";
+  configPath?: string;
+  useConfig: boolean;
+} {
   let write = false;
   let check = false;
-  let declarationAlignment: "types" | "columns" | "off" = "types";
+  let declarationAlignment: "types" | "columns" | "off" | undefined;
+  let configPath: string | undefined;
+  let useConfig = true;
   const files: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index]!;
     if (argument === "--write" || argument === "-w") write = true;
     else if (argument === "--check") check = true;
+    else if (argument === "--no-config") useConfig = false;
+    else if (argument === "--config") {
+      const value = args[++index];
+      if (!value) throw new Error("--config needs a path");
+      configPath = value;
+    } else if (argument.startsWith("--config=")) {
+      configPath = argument.slice("--config=".length);
+      if (!configPath) throw new Error("--config needs a path");
+    }
     else if (argument === "--declaration-alignment") {
       const value = args[++index];
       if (value !== "types" && value !== "columns" && value !== "off") throw new Error("--declaration-alignment must be types, columns, or off");
@@ -22,7 +41,7 @@ function parseArguments(args: string[]): { files: string[]; write: boolean; chec
     } else if (argument.startsWith("-")) throw new Error(`unknown option: ${argument}`);
     else files.push(argument);
   }
-  return { files, write, check, declarationAlignment };
+  return { files, write, check, declarationAlignment, configPath, useConfig };
 }
 
 async function main(): Promise<void> {
@@ -34,7 +53,17 @@ async function main(): Promise<void> {
     process.exitCode = 2;
     return;
   }
-  const { files, write, check, declarationAlignment } = parsedArguments;
+  const { files, write, check, declarationAlignment, configPath, useConfig } = parsedArguments;
+  let options;
+  try {
+    const discovered = useConfig ? await findConfig() : null;
+    const config = await loadConfig(configPath ?? discovered);
+    options = { ...config, ...(declarationAlignment ? { declarationAlignment } : {}) };
+  } catch (error) {
+    console.error(`quintfmt: ${error instanceof ConfigError ? error.message : String(error)}`);
+    process.exitCode = 2;
+    return;
+  }
 
   if (write && check) {
     console.error("quintfmt: --write and --check cannot be combined");
@@ -43,7 +72,7 @@ async function main(): Promise<void> {
     process.stdin.setEncoding("utf8");
     let source = "";
     for await (const chunk of process.stdin) source += chunk;
-    const result = format(source, { declarationAlignment });
+    const result = format(source, options);
     if (!result.ok) {
       for (const diagnostic of result.diagnostics) console.error(`${diagnostic.line}:${diagnostic.column}: ${diagnostic.code}: ${diagnostic.message}`);
       process.exitCode = 2;
@@ -60,7 +89,7 @@ async function main(): Promise<void> {
         continue;
       }
       const source = await readFile(file, "utf8");
-      const result = format(source, { declarationAlignment });
+      const result = format(source, options);
       if (!result.ok) {
         for (const diagnostic of result.diagnostics) console.error(`${file}:${diagnostic.line}:${diagnostic.column}: ${diagnostic.code}: ${diagnostic.message}`);
         process.exitCode = 2;
