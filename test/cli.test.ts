@@ -32,11 +32,11 @@ test("--write validates every file before replacing any file", async () => {
   assert.equal(await readFile(valid, "utf8"), source);
 });
 
-test("discovers .quintfmt and lets --no-config bypass it", async () => {
+test("discovers .quintfmt.conf and lets --no-config bypass it", async () => {
   const directory = await mkdtemp(join(tmpdir(), "quintfmt-config-"));
   const file = join(directory, "Demo.qnt");
   await writeFile(file, "module Demo {\nconst maximum:int\nvar x:int\n}\n", "utf8");
-  await writeFile(join(directory, ".quintfmt"), '{"declarationAlignment":"columns"}\n', "utf8");
+  await writeFile(join(directory, ".quintfmt.conf"), "declarations.alignment = columns\n", "utf8");
   const configured = spawnSync(process.execPath, [cli, file], { cwd: directory, encoding: "utf8" });
   const bypassed = spawnSync(process.execPath, [cli, "--no-config", file], { cwd: directory, encoding: "utf8" });
   assert.equal(configured.status, 0);

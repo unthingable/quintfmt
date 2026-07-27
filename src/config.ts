@@ -4,38 +4,58 @@ import type { FormatOptions } from "./api.js";
 
 export class ConfigError extends Error {}
 
-const configurationKeys = new Set(["indentWidth", "alignment", "declarationAlignment", "maxAlignmentPadding"]);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+const configurationKeys = new Set(["indentWidth", "alignment.mode", "alignment.maxPadding", "declarations.alignment"]);
 
 function positiveInteger(value: unknown, key: string): number {
   if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) throw new ConfigError(`${key} must be a positive integer`);
   return value;
 }
 
-export function parseConfig(source: string, label = ".quintfmt"): FormatOptions {
-  let value: unknown;
-  try {
-    value = JSON.parse(source);
-  } catch (error) {
-    throw new ConfigError(`${label} must contain JSON: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  if (!isRecord(value)) throw new ConfigError(`${label} must contain a JSON object`);
-  for (const key of Object.keys(value)) if (!configurationKeys.has(key)) throw new ConfigError(`${label}: unknown option ${key}`);
-  const options: FormatOptions = {};
-  if ("indentWidth" in value) options.indentWidth = positiveInteger(value.indentWidth, "indentWidth");
-  if ("maxAlignmentPadding" in value) options.maxAlignmentPadding = positiveInteger(value.maxAlignmentPadding, "maxAlignmentPadding");
-  if ("alignment" in value) {
-    if (value.alignment !== "local" && value.alignment !== "off") throw new ConfigError("alignment must be local or off");
-    options.alignment = value.alignment;
-  }
-  if ("declarationAlignment" in value) {
-    if (value.declarationAlignment !== "types" && value.declarationAlignment !== "columns" && value.declarationAlignment !== "off") {
-      throw new ConfigError("declarationAlignment must be types, columns, or off");
+function parseHocon(source: string, label: string): Map<string, string> {
+  const values = new Map<string, string>();
+  const scopes: string[] = [];
+  const lines = source.replace(/\r\n/g, "\n").split("\n");
+  for (let index = 0; index < lines.length; index += 1) {
+    const raw = lines[index] ?? "";
+    const line = raw.replace(/\s*(?:#|\/\/).*$/, "").trim();
+    if (!line) continue;
+    if (line === "}") {
+      if (!scopes.length) throw new ConfigError(`${label}:${index + 1}: unexpected }`);
+      scopes.pop();
+      continue;
     }
-    options.declarationAlignment = value.declarationAlignment;
+    const object = /^([A-Za-z][A-Za-z0-9_.-]*)\s*\{$/.exec(line);
+    if (object) {
+      scopes.push(...object[1]!.split("."));
+      continue;
+    }
+    const assignment = /^([A-Za-z][A-Za-z0-9_.-]*)\s*(?:=|:)\s*(.+)$/.exec(line);
+    if (!assignment) throw new ConfigError(`${label}:${index + 1}: expected key = value or key {`);
+    const value = assignment[2]!.trim();
+    if (!value || /[{}]/.test(value)) throw new ConfigError(`${label}:${index + 1}: unsupported HOCON value`);
+    values.set([...scopes, ...assignment[1]!.split(".")].join("."), value.replace(/^"(.*)"$/, "$1"));
+  }
+  if (scopes.length) throw new ConfigError(`${label}: unclosed object ${scopes.join(".")}`);
+  return values;
+}
+
+export function parseConfig(source: string, label = ".quintfmt.conf"): FormatOptions {
+  const value = parseHocon(source, label);
+  for (const key of value.keys()) if (!configurationKeys.has(key)) throw new ConfigError(`${label}: unknown option ${key}`);
+  const options: FormatOptions = {};
+  if (value.has("indentWidth")) options.indentWidth = positiveInteger(Number(value.get("indentWidth")), "indentWidth");
+  if (value.has("alignment.maxPadding")) options.maxAlignmentPadding = positiveInteger(Number(value.get("alignment.maxPadding")), "alignment.maxPadding");
+  if (value.has("alignment.mode")) {
+    const mode = value.get("alignment.mode");
+    if (mode !== "local" && mode !== "off") throw new ConfigError("alignment.mode must be local or off");
+    options.alignment = mode;
+  }
+  if (value.has("declarations.alignment")) {
+    const alignment = value.get("declarations.alignment");
+    if (alignment !== "types" && alignment !== "columns" && alignment !== "off") {
+      throw new ConfigError("declarations.alignment must be types, columns, or off");
+    }
+    options.declarationAlignment = alignment;
   }
   return options;
 }
@@ -52,7 +72,7 @@ async function exists(path: string): Promise<boolean> {
 export async function findConfig(start = process.cwd()): Promise<string | null> {
   let directory = resolve(start);
   while (true) {
-    const candidate = resolve(directory, ".quintfmt");
+    const candidate = resolve(directory, ".quintfmt.conf");
     if (await exists(candidate)) return candidate;
     const parent = dirname(directory);
     if (parent === directory) return null;

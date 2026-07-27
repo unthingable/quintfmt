@@ -13,23 +13,30 @@ The formatter's priority order is:
 3. make local structure easy to scan;
 4. permit a few team-level visual preferences without making style unstable.
 
-## `.quintfmt` files
+## `.quintfmt.conf` files
 
 `quintfmt` searches from the current working directory upward for a file named
-`.quintfmt`. The file is JSON, and its settings apply to every input in that
+`.quintfmt.conf`. The file uses a strict HOCON subset, and its settings apply to every input in that
 invocation. Use `--config path/to/file` to select a file explicitly, or
 `--no-config` to ignore discovery.
 
-```json
-{
-  "indentWidth": 2,
-  "alignment": "local",
-  "declarationAlignment": "types",
-  "maxAlignmentPadding": 12
+```hocon
+indentWidth = 2
+
+alignment {
+  mode = local
+  maxPadding = 12
+}
+
+declarations {
+  alignment = types
 }
 ```
 
-Unknown keys, malformed JSON, and invalid values are errors. This is
+The supported HOCON surface is deliberately small: comments, unquoted or quoted
+scalar values, nested objects, `=`/`:` assignments, and dotted keys. Includes,
+substitutions, arrays, and object merging are not supported. Unknown keys,
+malformed configuration, and invalid values are errors. This is
 intentional: a typo must never silently change—or fail to change—a repository's
 formatting policy.
 
@@ -59,7 +66,7 @@ The CLI currently exposes declaration alignment:
 quintfmt --declaration-alignment types Spec.qnt
 quintfmt --declaration-alignment columns Spec.qnt
 quintfmt --declaration-alignment off Spec.qnt
-quintfmt --config .quintfmt Spec.qnt
+quintfmt --config .quintfmt.conf Spec.qnt
 quintfmt --no-config Spec.qnt
 ```
 
