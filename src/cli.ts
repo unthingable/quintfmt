@@ -8,12 +8,22 @@ function parseArguments(args: string[]): {
   write: boolean;
   check: boolean;
   declarationAlignment?: "types" | "columns" | "off";
+  definitionSpacing?: "nontrivial" | "compact";
+  recordAlignment?: "local" | "off";
+  clauseAlignment?: "off" | "operator" | "full";
+  blankLinePolicy?: "preserve" | "single";
+  lineEnding?: "preserve" | "lf" | "crlf";
   configPath?: string;
   useConfig: boolean;
 } {
   let write = false;
   let check = false;
   let declarationAlignment: "types" | "columns" | "off" | undefined;
+  let definitionSpacing: "nontrivial" | "compact" | undefined;
+  let recordAlignment: "local" | "off" | undefined;
+  let clauseAlignment: "off" | "operator" | "full" | undefined;
+  let blankLinePolicy: "preserve" | "single" | undefined;
+  let lineEnding: "preserve" | "lf" | "crlf" | undefined;
   let configPath: string | undefined;
   let useConfig = true;
   const files: string[] = [];
@@ -38,10 +48,50 @@ function parseArguments(args: string[]): {
       const value = argument.slice("--declaration-alignment=".length);
       if (value !== "types" && value !== "columns" && value !== "off") throw new Error("--declaration-alignment must be types, columns, or off");
       declarationAlignment = value;
+    } else if (argument === "--definition-spacing") {
+      const value = args[++index];
+      if (value !== "nontrivial" && value !== "compact") throw new Error("--definition-spacing must be nontrivial or compact");
+      definitionSpacing = value;
+    } else if (argument.startsWith("--definition-spacing=")) {
+      const value = argument.slice("--definition-spacing=".length);
+      if (value !== "nontrivial" && value !== "compact") throw new Error("--definition-spacing must be nontrivial or compact");
+      definitionSpacing = value;
+    } else if (argument === "--record-alignment") {
+      const value = args[++index];
+      if (value !== "local" && value !== "off") throw new Error("--record-alignment must be local or off");
+      recordAlignment = value;
+    } else if (argument.startsWith("--record-alignment=")) {
+      const value = argument.slice("--record-alignment=".length);
+      if (value !== "local" && value !== "off") throw new Error("--record-alignment must be local or off");
+      recordAlignment = value;
+    } else if (argument === "--clause-alignment") {
+      const value = args[++index];
+      if (value !== "off" && value !== "operator" && value !== "full") throw new Error("--clause-alignment must be off, operator, or full");
+      clauseAlignment = value;
+    } else if (argument.startsWith("--clause-alignment=")) {
+      const value = argument.slice("--clause-alignment=".length);
+      if (value !== "off" && value !== "operator" && value !== "full") throw new Error("--clause-alignment must be off, operator, or full");
+      clauseAlignment = value;
+    } else if (argument === "--blank-lines") {
+      const value = args[++index];
+      if (value !== "preserve" && value !== "single") throw new Error("--blank-lines must be preserve or single");
+      blankLinePolicy = value;
+    } else if (argument.startsWith("--blank-lines=")) {
+      const value = argument.slice("--blank-lines=".length);
+      if (value !== "preserve" && value !== "single") throw new Error("--blank-lines must be preserve or single");
+      blankLinePolicy = value;
+    } else if (argument === "--line-ending") {
+      const value = args[++index];
+      if (value !== "preserve" && value !== "lf" && value !== "crlf") throw new Error("--line-ending must be preserve, lf, or crlf");
+      lineEnding = value;
+    } else if (argument.startsWith("--line-ending=")) {
+      const value = argument.slice("--line-ending=".length);
+      if (value !== "preserve" && value !== "lf" && value !== "crlf") throw new Error("--line-ending must be preserve, lf, or crlf");
+      lineEnding = value;
     } else if (argument.startsWith("-")) throw new Error(`unknown option: ${argument}`);
     else files.push(argument);
   }
-  return { files, write, check, declarationAlignment, configPath, useConfig };
+  return { files, write, check, declarationAlignment, definitionSpacing, recordAlignment, clauseAlignment, blankLinePolicy, lineEnding, configPath, useConfig };
 }
 
 async function main(): Promise<void> {
@@ -53,12 +103,20 @@ async function main(): Promise<void> {
     process.exitCode = 2;
     return;
   }
-  const { files, write, check, declarationAlignment, configPath, useConfig } = parsedArguments;
+  const { files, write, check, declarationAlignment, definitionSpacing, recordAlignment, clauseAlignment, blankLinePolicy, lineEnding, configPath, useConfig } = parsedArguments;
   let options;
   try {
     const discovered = useConfig ? await findConfig() : null;
     const config = await loadConfig(configPath ?? discovered);
-    options = { ...config, ...(declarationAlignment ? { declarationAlignment } : {}) };
+    options = {
+      ...config,
+      ...(declarationAlignment ? { declarationAlignment } : {}),
+      ...(definitionSpacing ? { definitionSpacing } : {}),
+      ...(recordAlignment ? { recordAlignment } : {}),
+      ...(clauseAlignment ? { clauseAlignment } : {}),
+      ...(blankLinePolicy ? { blankLinePolicy } : {}),
+      ...(lineEnding ? { lineEnding } : {}),
+    };
   } catch (error) {
     console.error(`quintfmt: ${error instanceof ConfigError ? error.message : String(error)}`);
     process.exitCode = 2;

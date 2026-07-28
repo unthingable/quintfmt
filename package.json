@@ -18,7 +18,7 @@
   "scripts": {
     "clean": "node ./scripts/clean-dist.mjs",
     "generate": "antlr4ts -visitor -o src/generated vendor/quint/Quint.g4",
-    "build": "npm run clean && npm run generate && tsc -p tsconfig.json",
+    "build": "npm run clean && npm run generate && tsc -p tsconfig.json && node ./scripts/make-cli-executable.mjs",
     "test": "npm run build && node --test dist/test/*.test.js",
     "check": "npm test",
     "prepack": "npm run build"

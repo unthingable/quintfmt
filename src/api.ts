@@ -1,32 +1,17 @@
 import { CharStreams, CommonTokenStream, Token } from "antlr4ts";
-import type { ParseTree } from "antlr4ts/tree/ParseTree";
 import { QuintLexer } from "./generated/vendor/quint/QuintLexer.js";
-import {
-  AssumeContext,
-  BracesContext,
-  IfElseContext,
-  ImportDefContext,
-  InstanceContext,
-  LambdaConsContext,
-  LetInContext,
-  ListAppContext,
-  ListContext,
-  MatchContext,
-  PairContext,
-  PureValDestructuringContext,
-  QuintParser,
-  TupleContext,
-  TypeDefsContext,
-  UnitContext,
-  ValDestructuringContext,
-  ExportDefContext,
-} from "./generated/vendor/quint/QuintParser.js";
+import { QuintParser } from "./generated/vendor/quint/QuintParser.js";
 
 export interface FormatOptions {
   indentWidth?: number;
   maxAlignmentPadding?: number;
   alignment?: "local" | "off";
   declarationAlignment?: "types" | "columns" | "off";
+  recordAlignment?: "local" | "off";
+  clauseAlignment?: "off" | "operator" | "full";
+  definitionSpacing?: "nontrivial" | "compact";
+  blankLinePolicy?: "preserve" | "single";
+  lineEnding?: "preserve" | "lf" | "crlf";
 }
 
 export interface Diagnostic {
@@ -42,14 +27,19 @@ export type FormatResult =
 
 const defaultOptions: Required<FormatOptions> = {
   indentWidth: 2,
-  maxAlignmentPadding: 12,
+  maxAlignmentPadding: 16,
   alignment: "local",
   declarationAlignment: "types",
+  recordAlignment: "local",
+  clauseAlignment: "operator",
+  definitionSpacing: "nontrivial",
+  blankLinePolicy: "preserve",
+  lineEnding: "preserve",
 };
 
 type Line = { source: string; tokens: Token[]; comments: Token[]; barrier: boolean; verbatim: boolean };
 
-function parse(source: string): { tree: ParseTree; tokens: Token[]; diagnostics: Diagnostic[] } {
+function parse(source: string): { tokens: Token[]; diagnostics: Diagnostic[] } {
   const lexer = new QuintLexer(CharStreams.fromString(source));
   const diagnostics: Diagnostic[] = [];
   lexer.removeErrorListeners();
@@ -66,7 +56,7 @@ function parse(source: string): { tree: ParseTree; tokens: Token[]; diagnostics:
       diagnostics.push({ code: "QFMT_PARSE", line, column: column + 1, message });
     },
   });
-  const tree = parser.modules();
+  parser.modules();
   const tapeLexer = new QuintLexer(CharStreams.fromString(source));
   tapeLexer.removeErrorListeners();
   tapeLexer.addErrorListener({
@@ -74,7 +64,7 @@ function parse(source: string): { tree: ParseTree; tokens: Token[]; diagnostics:
       diagnostics.push({ code: "QFMT_PARSE", line, column: column + 1, message });
     },
   });
-  return { tree, tokens: tapeLexer.getAllTokens().filter((token) => token.type !== Token.EOF), diagnostics };
+  return { tokens: tapeLexer.getAllTokens().filter((token) => token.type !== Token.EOF), diagnostics };
 }
 
 function isComment(token: Token): boolean {
@@ -105,25 +95,12 @@ function makeLines(source: string, tokens: Token[]): Line[] {
   return lines;
 }
 
-function unsupportedNode(node: ParseTree): string | null {
-  const unsupported = [
-    AssumeContext, InstanceContext, TypeDefsContext, ImportDefContext, ExportDefContext,
-    ValDestructuringContext, PureValDestructuringContext, MatchContext, IfElseContext,
-    LetInContext, LambdaConsContext, ListContext, ListAppContext, TupleContext, UnitContext,
-    PairContext, BracesContext,
-  ];
-  if (unsupported.some((kind) => node instanceof kind)) return node.constructor.name;
-  for (let index = 0; index < node.childCount; index += 1) {
-    const found = unsupportedNode(node.getChild(index));
-    if (found) return found;
-  }
-  return null;
-}
-
 function needsSpace(previous: string, current: string): boolean {
-  if ([")", "]", "}", ",", ".", "::", "'"].includes(current)) return false;
+  if ([")", "]", ",", ".", "::", "'"].includes(current)) return false;
+  if (current === "}") return previous !== "{";
   if (["(", "[", ".", "::"].includes(previous)) return false;
   if (previous === "'") return /^[A-Za-z_][A-Za-z0-9_]*$/.test(current) ? false : true;
+  if (previous === "...") return false;
   if (current === ":") return false;
   if (previous === ":" || previous === ",") return true;
   if (current === "(") return !/^[A-Za-z_][A-Za-z0-9_]*$/.test(previous);
@@ -157,6 +134,17 @@ function splitComment(comment: Token): string {
   return (comment.text ?? "").replace(/\r?\n$/, "");
 }
 
+function containsStringLiteral(line: string): boolean {
+  let quoted = false;
+  let escaped = false;
+  for (const character of line) {
+    if (escaped) { escaped = false; continue; }
+    if (quoted && character === "\\") { escaped = true; continue; }
+    if (character === '"') quoted = !quoted;
+  }
+  return quoted || /"/.test(line);
+}
+
 function alignDeclarations(lines: string[], maximumPadding: number, mode: Required<FormatOptions>["declarationAlignment"]): string[] {
   const match = lines.map((line) => /^(const|var)\s+([A-Za-z_][\w:]*)\s*:\s*(.+)$/.exec(line));
   if (match.some((item) => !item)) return lines;
@@ -176,21 +164,252 @@ function alignDelimited(lines: string[], expression: RegExp, maximumPadding: num
   return match.map((item) => `${item![1].padEnd(width)} ${item![2]} ${item![3]}`);
 }
 
-function alignLocal(lines: string[], maximumPadding: number, declarationAlignment: Required<FormatOptions>["declarationAlignment"]): string[] {
+function alignLocal(
+  lines: string[],
+  maximumPadding: number,
+  declarationAlignment: Required<FormatOptions>["declarationAlignment"],
+  recordAlignment: Required<FormatOptions>["recordAlignment"],
+  clauseAlignment: Required<FormatOptions>["clauseAlignment"],
+): string[] {
   if (lines.length < 2) return lines;
   const declarations = alignDeclarations(lines, maximumPadding, declarationAlignment);
   if (declarations !== lines) return declarations;
-  const records = alignDelimited(lines, /^([A-Za-z_][\w]*)\s*(:)\s*(.+,?)$/, maximumPadding);
-  if (records !== lines) return records;
-  return alignDelimited(lines, /^(.+?)\s*(==|!=|<=|>=|<|>|=)\s*(.+)$/, maximumPadding);
+  const records = lines.map((line) => /^([A-Za-z_][\w]*)\s*:\s*(.+,?)$/.exec(line));
+  if (recordAlignment === "local" && records.every(Boolean)) {
+    const heads = records.map((record) => `${record![1]}:`);
+    const width = Math.max(...heads.map((head) => head.length));
+    if (heads.every((head) => width - head.length <= maximumPadding)) {
+      return records.map((record, index) => `${heads[index].padEnd(width)} ${record![2]}`);
+    }
+  }
+  return clauseAlignment !== "off"
+    ? alignDelimited(lines, /^(.+?)\s*(==|!=|<=|>=|<|>|=)\s*(.+)$/, maximumPadding)
+    : lines;
 }
 
-function alignmentKind(line: string): "declaration" | "record" | "relation" | null {
+function alignmentKind(
+  line: string,
+  recordAlignment: Required<FormatOptions>["recordAlignment"],
+  clauseAlignment: Required<FormatOptions>["clauseAlignment"],
+): "declaration" | "record" | "comparison" | "assignment" | null {
   const trimmed = line.trimStart();
+  // A match arm's `=>` is not a relation. Treating its `=` as one rewrites the
+  // arrow to `= >` during table alignment and makes otherwise valid Quint fail
+  // the output reparse.
+  if (trimmed.includes("=>")) return null;
+  if (containsStringLiteral(trimmed)) return null;
   if (/^(const|var)\s+[A-Za-z_][\w:]*\s*:/.test(trimmed)) return "declaration";
-  if (/^[A-Za-z_][\w]*\s*:/.test(trimmed)) return "record";
-  if (/^.+?\s*(==|!=|<=|>=|<|>|=)\s*.+$/.test(trimmed)) return "relation";
+  if (recordAlignment === "local" && /^[A-Za-z_][\w]*\s*:/.test(trimmed)) return "record";
+  if (/^(?:pure\s+)?(?:val|def)|^(?:action|temporal|nondet|type|module)\b/.test(trimmed)) return null;
+  if (clauseAlignment !== "off" && /^.+?\s*(==|!=|<=|>=|<|>)\s*.+$/.test(trimmed)) return "comparison";
+  if (clauseAlignment !== "off" && /^.+?\s*=\s*.+$/.test(trimmed)) return "assignment";
   return null;
+}
+
+function compactSingletonBraces(lines: string[], barriers: boolean[]): { lines: string[]; barriers: boolean[] } {
+  const compacted = [...lines];
+  const compactedBarriers = [...barriers];
+  for (let index = 0; index + 1 < compacted.length; index += 1) {
+    if (compactedBarriers[index] || compactedBarriers[index + 1]) continue;
+    if (!/^\s*}\s*$/.test(compacted[index + 1])) continue;
+    if (!/\{\s*[A-Za-z_][\w]*$/.test(compacted[index])) continue;
+    compacted[index] = `${compacted[index].trimEnd()} }`;
+    compacted.splice(index + 1, 1);
+    compactedBarriers.splice(index + 1, 1);
+  }
+  return { lines: compacted, barriers: compactedBarriers };
+}
+
+function normalizeTrailingBooleanChains(
+  lines: string[],
+  barriers: boolean[],
+  indentWidth: number,
+): { lines: string[]; barriers: boolean[] } {
+  const normalized = [...lines];
+  const normalizedBarriers = [...barriers];
+  for (let start = 0; start + 1 < normalized.length; start += 1) {
+    if (normalizedBarriers[start] || normalizedBarriers[start + 1] || containsStringLiteral(normalized[start]!)) continue;
+    if (!/^\s*(?:pure\s+)?(?:val|def)\b/.test(normalized[start]!)) continue;
+    const header = /^(\s*.*?\s=)\s+(.+?)\s+(and|or)$/.exec(normalized[start]!);
+    if (!header) continue;
+    const clauses = [header[2]!];
+    const connectors = [header[3]!];
+    let end = start;
+    for (let index = start + 1; index < normalized.length && !normalizedBarriers[index]; index += 1) {
+      if (containsStringLiteral(normalized[index]!)) break;
+      const row = /^\s*(.+?)(?:\s+(and|or))?$/.exec(normalized[index]!);
+      if (!row) break;
+      clauses.push(row[1]!);
+      end = index;
+      if (!row[2]) break;
+      connectors.push(row[2]!);
+    }
+    if (end === start || connectors.length !== clauses.length - 1) continue;
+    const indent = " ".repeat(indentation(header[1]!) + indentWidth);
+    const replacement = [header[1]!, `${indent}${clauses[0]!}`];
+    for (let index = 1; index < clauses.length; index += 1) replacement.push(`${indent}${connectors[index - 1]!} ${clauses[index]!}`);
+    normalized.splice(start, end - start + 1, ...replacement);
+    normalizedBarriers.splice(start, end - start + 1, ...replacement.map(() => false));
+    start += replacement.length - 1;
+  }
+  return { lines: normalized, barriers: normalizedBarriers };
+}
+
+function expandBooleanDefinitionChains(
+  lines: string[],
+  barriers: boolean[],
+  indentWidth: number,
+  clauseAlignment: Required<FormatOptions>["clauseAlignment"],
+): { lines: string[]; barriers: boolean[] } {
+  const expanded = [...lines];
+  const expandedBarriers = [...barriers];
+  for (let index = 0; index + 1 < expanded.length; index += 1) {
+    if (expandedBarriers[index] || expandedBarriers[index + 1]) continue;
+    if (!/^\s*(?:pure\s+)?(?:val|def)\b/.test(expanded[index]!)) continue;
+    const inline = /^\s*(?:and|or)\b/.test(expanded[index + 1]!);
+    const expandedChain = /=\s*$/.test(expanded[index]!)
+      && index + 2 < expanded.length
+      && !expandedBarriers[index + 2]
+      && /^\s*(?:and|or)\b/.test(expanded[index + 2]!);
+    if (!inline && !expandedChain) continue;
+    const match = inline ? /^(\s*.*?\s=)\s+(.+)$/.exec(expanded[index]!) : null;
+    if (inline && !match) continue;
+    const header = match?.[1] ?? expanded[index]!;
+    const baseIndentation = indentation(header);
+    const firstIndent = " ".repeat(baseIndentation + (clauseAlignment === "full" ? "and ".length : indentWidth));
+    const logicalIndent = " ".repeat(clauseAlignment === "full" ? baseIndentation : baseIndentation + indentWidth);
+    let firstIndex = index + 1;
+    if (match) {
+      expanded[index] = header;
+      expanded.splice(firstIndex, 0, `${firstIndent}${match[2]!}`);
+      expandedBarriers.splice(firstIndex, 0, false);
+    } else {
+      expanded[firstIndex] = `${firstIndent}${expanded[firstIndex]!.trimStart()}`;
+    }
+    index = firstIndex;
+    while (index + 1 < expanded.length && !expandedBarriers[index + 1] && /^\s*(?:and|or)\b/.test(expanded[index + 1]!)) {
+      expanded[index + 1] = `${logicalIndent}${expanded[index + 1]!.trimStart()}`;
+      index += 1;
+    }
+  }
+  return { lines: expanded, barriers: expandedBarriers };
+}
+
+function alignFullBooleanChains(lines: string[], barriers: boolean[], maximumPadding: number): string[] {
+  const output = [...lines];
+  for (let start = 0; start + 2 < output.length; start += 1) {
+    if (barriers[start] || !/=\s*$/.test(output[start]!)) continue;
+    const first = /^(\s*)(.+?)\s*(==|!=|<=|>=|<|>)\s*(.+)$/.exec(output[start + 1]!);
+    if (!first || barriers[start + 1] || containsStringLiteral(output[start + 1]!)) continue;
+    const rows: Array<{ index: number; indent: string; connector: string; left: string; operator: string; right: string }> = [
+      { index: start + 1, indent: first[1]!, connector: "", left: first[2]!, operator: first[3]!, right: first[4]! },
+    ];
+    for (let index = start + 2; index < output.length && !barriers[index]; index += 1) {
+      const row = /^(\s*)(and|or)\s+(.+?)\s*(==|!=|<=|>=|<|>)\s*(.+)$/.exec(output[index]!);
+      if (!row || containsStringLiteral(output[index]!)) break;
+      rows.push({ index, indent: row[1]!, connector: `${row[2]!.padEnd("and".length)} `, left: row[3]!, operator: row[4]!, right: row[5]! });
+    }
+    if (rows.length < 2) continue;
+    const widths = rows.map((row) => row.indent.length + row.connector.length + row.left.length);
+    const target = Math.max(...widths);
+    if (widths.some((width) => target - width > maximumPadding)) continue;
+    for (const row of rows) {
+      const padding = target - row.indent.length - row.connector.length - row.left.length;
+      output[row.index] = `${row.indent}${row.connector}${row.left}${" ".repeat(padding)} ${row.operator} ${row.right}`;
+    }
+    start = rows.at(-1)!.index;
+  }
+  return output;
+}
+
+function isDefinition(line: string): boolean {
+  return /^(?:(?:pure\s+)?(?:val|def)|action|temporal|nondet)\b/.test(line.trimStart());
+}
+
+function indentation(line: string): number {
+  return line.length - line.trimStart().length;
+}
+
+function isCommentLine(line: string): boolean {
+  return /^(?:\/\/|\/\*|\*)/.test(line.trimStart());
+}
+
+function separateNontrivialDefinitions(lines: string[]): string[] {
+  const separators = new Set<number>();
+  for (let start = 0; start < lines.length; start += 1) {
+    if (!isDefinition(lines[start]!)) continue;
+    const baseIndentation = indentation(lines[start]!);
+    let end = start;
+    while (end + 1 < lines.length) {
+      const next = lines[end + 1]!;
+      if (!next.trim()) break;
+      if (isCommentLine(next)) {
+        let following = end + 1;
+        while (following + 1 < lines.length && isCommentLine(lines[following + 1]!)) following += 1;
+        const nextDefinition = lines[following + 1];
+        if (nextDefinition && isDefinition(nextDefinition) && indentation(nextDefinition) <= baseIndentation) break;
+      }
+      if (isDefinition(next) && indentation(next) <= baseIndentation) break;
+      end += 1;
+      if (next.trim() === "}" && indentation(next) <= baseIndentation) break;
+    }
+    let hasLeadingComment = false;
+    for (let index = start - 1; index >= 0 && lines[index]!.trim(); index -= 1) {
+      if (isCommentLine(lines[index]!)) hasLeadingComment = true;
+      else break;
+    }
+    const nontrivial = hasLeadingComment || end > start || lines[start]!.includes("//");
+    const next = lines[end + 1];
+    if (nontrivial && next && next.trim() && next.trim() !== "}") separators.add(end);
+    start = end;
+  }
+  return lines.flatMap((line, index) => separators.has(index) ? [line, ""] : [line]);
+}
+
+function alignmentWidths(
+  lines: string[],
+  kind: "declaration" | "record" | "comparison" | "assignment",
+  declarationAlignment: Required<FormatOptions>["declarationAlignment"],
+): number[] | null {
+  const content = lines.map((line) => line.trimStart());
+  if (kind === "declaration") {
+    if (declarationAlignment === "off") return null;
+    const matches = content.map((line) => /^(const|var)\s+([A-Za-z_][\w:]*)\s*:\s*(.+)$/.exec(line));
+    if (matches.some((match) => !match)) return null;
+    const qualifierWidth = declarationAlignment === "columns" ? Math.max(...matches.map((match) => match![1].length)) : 0;
+    return matches.map((match) => `${declarationAlignment === "columns" ? match![1].padEnd(qualifierWidth) : match![1]} ${match![2]}:`.length);
+  }
+  if (kind === "record") {
+    const matches = content.map((line) => /^([A-Za-z_][\w]*)\s*:\s*(.+,?)$/.exec(line));
+    return matches.some((match) => !match) ? null : matches.map((match) => `${match![1]}:`.length);
+  }
+  const matches = content.map((line) => /^(.+?)\s*(==|!=|<=|>=|<|>|=)\s*(.+)$/.exec(line));
+  return matches.some((match) => !match) ? null : matches.map((match) => match![1].length);
+}
+
+function alignWithinPadding(
+  island: string[],
+  kind: "declaration" | "record" | "comparison" | "assignment",
+  maximumPadding: number,
+  declarationAlignment: Required<FormatOptions>["declarationAlignment"],
+  recordAlignment: Required<FormatOptions>["recordAlignment"],
+  clauseAlignment: Required<FormatOptions>["clauseAlignment"],
+): string[] {
+  const output: string[] = [];
+  for (let start = 0; start < island.length;) {
+    let end = start + 1;
+    while (end < island.length) {
+      const widths = alignmentWidths(island.slice(start, end + 1), kind, declarationAlignment);
+      if (!widths || Math.max(...widths) - Math.min(...widths) > maximumPadding) break;
+      end += 1;
+    }
+    const group = island.slice(start, end);
+    const prefixes = group.map((line) => line.match(/^\s*/)?.[0] ?? "");
+    output.push(...alignLocal(group.map((line) => line.trimStart()), maximumPadding, declarationAlignment, recordAlignment, clauseAlignment)
+      .map((line, index) => `${prefixes[index]}${line}`));
+    start = end;
+  }
+  return output;
 }
 
 function alignIslands(
@@ -198,23 +417,23 @@ function alignIslands(
   barriers: boolean[],
   maximumPadding: number,
   declarationAlignment: Required<FormatOptions>["declarationAlignment"],
+  recordAlignment: Required<FormatOptions>["recordAlignment"],
+  clauseAlignment: Required<FormatOptions>["clauseAlignment"],
 ): string[] {
   const output = [...rendered];
   for (let start = 0; start < output.length;) {
-    const kind = !barriers[start] ? alignmentKind(output[start]) : null;
+    const kind = !barriers[start] ? alignmentKind(output[start], recordAlignment, clauseAlignment) : null;
     if (!kind) { start += 1; continue; }
     const indentation = output[start].match(/^\s*/)?.[0] ?? "";
     let end = start + 1;
     while (
       end < output.length
       && !barriers[end]
-      && alignmentKind(output[end]) === kind
+      && alignmentKind(output[end], recordAlignment, clauseAlignment) === kind
       && (output[end].match(/^\s*/)?.[0] ?? "") === indentation
     ) end += 1;
     const island = output.slice(start, end);
-    const prefixes = island.map((line) => line.match(/^\s*/)?.[0] ?? "");
-    const aligned = alignLocal(island.map((line) => line.trimStart()), maximumPadding, declarationAlignment)
-      .map((line, index) => `${prefixes[index]}${line}`);
+    const aligned = alignWithinPadding(island, kind, maximumPadding, declarationAlignment, recordAlignment, clauseAlignment);
     output.splice(start, island.length, ...aligned);
     start = end;
   }
@@ -227,13 +446,13 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
   try {
     const parsed = parse(source);
     if (parsed.diagnostics.length) return { ok: false, formatted: null, diagnostics: parsed.diagnostics };
-    const unsupported = unsupportedNode(parsed.tree);
-    if (unsupported) return { ok: false, formatted: null, diagnostics: [{ code: "QFMT_UNSUPPORTED", line: 1, column: 1, message: `unsupported Quint syntax in first formatter slice: ${unsupported}` }] };
     const lines = makeLines(source, parsed.tokens);
     const rendered: string[] = [];
     const barriers: boolean[] = [];
     let depth = 0;
-    for (const line of lines) {
+    let continuation = false;
+    for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+      const line = lines[lineIndex]!;
       if (line.verbatim) {
         rendered.push(line.source);
         barriers.push(true);
@@ -263,21 +482,53 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
         continue;
       }
       if (startsClose(line.tokens)) depth = Math.max(0, depth - 1);
-      let value = `${" ".repeat(depth * settings.indentWidth)}${renderTokens(line.tokens)}`;
+      const indentation = depth + (continuation && !startsClose(line.tokens) ? 1 : 0);
+      let value = `${" ".repeat(indentation * settings.indentWidth)}${renderTokens(line.tokens)}`;
       if (line.comments.length) value += `  ${line.comments.map(splitComment).join(" ")}`;
       rendered.push(line.comments.length ? value : value.trimEnd());
       barriers.push(line.barrier);
       depth = Math.max(0, depth + braceDelta(line.tokens) + (startsClose(line.tokens) ? 1 : 0));
+      const nextFirstToken = lines[lineIndex + 1]?.tokens[0]?.text;
+      continuation = line.tokens.at(-1)?.text === "="
+        || (continuation && (nextFirstToken === "and" || nextFirstToken === "or"));
     }
+    const compactedBraces = compactSingletonBraces(rendered, barriers);
+    const normalizedTrailingChains = normalizeTrailingBooleanChains(
+      compactedBraces.lines,
+      compactedBraces.barriers,
+      settings.indentWidth,
+    );
+    const expandedBooleanChains = expandBooleanDefinitionChains(
+      normalizedTrailingChains.lines,
+      normalizedTrailingChains.barriers,
+      settings.indentWidth,
+      settings.alignment === "local" ? settings.clauseAlignment : "off",
+    );
     const aligned = settings.alignment === "local"
-      ? alignIslands(rendered, barriers, settings.maxAlignmentPadding, settings.declarationAlignment)
-      : rendered;
-    const compact = aligned.reduce<string[]>((result, line) => {
-      if (!line.trim() && !result.at(-1)?.trim()) return result;
+      ? alignIslands(
+        expandedBooleanChains.lines,
+        expandedBooleanChains.barriers,
+        settings.maxAlignmentPadding,
+        settings.declarationAlignment,
+        settings.recordAlignment,
+        settings.clauseAlignment,
+      )
+      : expandedBooleanChains.lines;
+    const fullChains = settings.alignment === "local" && settings.clauseAlignment === "full"
+      ? alignFullBooleanChains(aligned, expandedBooleanChains.barriers, settings.maxAlignmentPadding)
+      : aligned;
+    const spaced = settings.definitionSpacing === "nontrivial"
+      ? separateNontrivialDefinitions(fullChains)
+      : fullChains;
+    const compact = spaced.reduce<string[]>((result, line) => {
+      if (settings.blankLinePolicy === "single" && !line.trim() && !result.at(-1)?.trim()) return result;
       result.push(line);
       return result;
     }, []);
-    const formatted = `${compact.join("\n").replace(/\n+$/, "")}\n`;
+    const lineEnding = settings.lineEnding === "preserve"
+      ? (source.includes("\r\n") ? "\r\n" : "\n")
+      : settings.lineEnding === "crlf" ? "\r\n" : "\n";
+    const formatted = `${compact.join(lineEnding).replace(new RegExp(`(?:${lineEnding})+$`), "")}${lineEnding}`;
     const verification = parse(formatted);
     if (verification.diagnostics.length) return { ok: false, formatted: null, diagnostics: verification.diagnostics };
     return { ok: true, formatted, diagnostics: [] };

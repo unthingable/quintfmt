@@ -4,7 +4,10 @@ import type { FormatOptions } from "./api.js";
 
 export class ConfigError extends Error {}
 
-const configurationKeys = new Set(["indentWidth", "alignment.mode", "alignment.maxPadding", "declarations.alignment"]);
+const configurationKeys = new Set([
+  "indentWidth", "alignment.mode", "alignment.maxPadding", "alignment.records", "alignment.clauses",
+  "declarations.alignment", "definitions.spacing", "blankLines.policy", "lineEnding",
+]);
 
 function positiveInteger(value: unknown, key: string): number {
   if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) throw new ConfigError(`${key} must be a positive integer`);
@@ -50,12 +53,39 @@ export function parseConfig(source: string, label = ".quintfmt.conf"): FormatOpt
     if (mode !== "local" && mode !== "off") throw new ConfigError("alignment.mode must be local or off");
     options.alignment = mode;
   }
+  if (value.has("alignment.records")) {
+    const mode = value.get("alignment.records");
+    if (mode !== "local" && mode !== "off") throw new ConfigError("alignment.records must be local or off");
+    options.recordAlignment = mode;
+  }
+  if (value.has("alignment.clauses")) {
+    const mode = value.get("alignment.clauses");
+    if (mode !== "off" && mode !== "operator" && mode !== "full") {
+      throw new ConfigError("alignment.clauses must be off, operator, or full");
+    }
+    options.clauseAlignment = mode;
+  }
   if (value.has("declarations.alignment")) {
     const alignment = value.get("declarations.alignment");
     if (alignment !== "types" && alignment !== "columns" && alignment !== "off") {
       throw new ConfigError("declarations.alignment must be types, columns, or off");
     }
     options.declarationAlignment = alignment;
+  }
+  if (value.has("definitions.spacing")) {
+    const spacing = value.get("definitions.spacing");
+    if (spacing !== "nontrivial" && spacing !== "compact") throw new ConfigError("definitions.spacing must be nontrivial or compact");
+    options.definitionSpacing = spacing;
+  }
+  if (value.has("blankLines.policy")) {
+    const policy = value.get("blankLines.policy");
+    if (policy !== "preserve" && policy !== "single") throw new ConfigError("blankLines.policy must be preserve or single");
+    options.blankLinePolicy = policy;
+  }
+  if (value.has("lineEnding")) {
+    const lineEnding = value.get("lineEnding");
+    if (lineEnding !== "preserve" && lineEnding !== "lf" && lineEnding !== "crlf") throw new ConfigError("lineEnding must be preserve, lf, or crlf");
+    options.lineEnding = lineEnding;
   }
   return options;
 }

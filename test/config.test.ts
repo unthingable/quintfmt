@@ -10,15 +10,29 @@ test("parses supported .quintfmt.conf options", () => {
     }
     declarations.alignment = columns
     alignment.maxPadding = 8
+    alignment.records = off
+    alignment.clauses = full
+    definitions.spacing = compact
+    blankLines.policy = single
+    lineEnding = crlf
   `), {
     indentWidth: 4,
     alignment: "local",
     declarationAlignment: "columns",
     maxAlignmentPadding: 8,
+    recordAlignment: "off",
+    clauseAlignment: "full",
+    definitionSpacing: "compact",
+    blankLinePolicy: "single",
+    lineEnding: "crlf",
   });
 });
 
 test("rejects unknown and invalid .quintfmt.conf options", () => {
   assert.throws(() => parseConfig("declarations.spacing = groups"), ConfigError);
   assert.throws(() => parseConfig("alignment.maxPadding = 0"), ConfigError);
+  assert.throws(() => parseConfig("definitions.spacing = groups"), ConfigError);
+  assert.throws(() => parseConfig("blankLines.policy = many"), ConfigError);
+  assert.throws(() => parseConfig("lineEnding = mac"), ConfigError);
+  assert.throws(() => parseConfig("alignment.clauses = local"), ConfigError);
 });

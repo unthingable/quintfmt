@@ -25,12 +25,21 @@ indentWidth = 2
 
 alignment {
   mode = local
-  maxPadding = 12
+  maxPadding = 16
+  records = local
+  clauses = operator
 }
 
 declarations {
   alignment = types
 }
+
+definitions {
+  spacing = nontrivial
+}
+
+blankLines.policy = preserve
+lineEnding = preserve
 ```
 
 The supported HOCON surface is deliberately small: comments, unquoted or quoted
@@ -49,7 +58,12 @@ format(source, {
   indentWidth: 2,
   alignment: "local",
   declarationAlignment: "types",
-  maxAlignmentPadding: 12,
+  maxAlignmentPadding: 16,
+  definitionSpacing: "nontrivial",
+  recordAlignment: "local",
+  clauseAlignment: "operator",
+  blankLinePolicy: "preserve",
+  lineEnding: "preserve",
 })
 ```
 
@@ -58,7 +72,12 @@ format(source, {
 | `indentWidth` | positive integer | `2` | Spaces used for block indentation. |
 | `alignment` | `local`, `off` | `local` | Enables or disables all local alignment. |
 | `declarationAlignment` | `types`, `columns`, `off` | `types` | Controls alignment within consecutive `const`/`var` groups. |
-| `maxAlignmentPadding` | positive integer | `12` | Maximum spaces added before a column. The formatter splits or leaves a local group unaligned rather than creating an excessive gap. |
+| `recordAlignment` | `local`, `off` | `local` | Controls local alignment of record fields and values. |
+| `clauseAlignment` | `off`, `operator`, `full` | `operator` | Controls layout and alignment of compatible action and Boolean clauses. |
+| `maxAlignmentPadding` | positive integer | `16` | Maximum spaces added before a column. The formatter splits a local group rather than creating an excessive gap. |
+| `definitionSpacing` | `nontrivial`, `compact` | `nontrivial` | Adds one blank line after a comment-led, trailing-comment, or multiline module-level definition. |
+| `blankLinePolicy` | `preserve`, `single` | `preserve` | Preserves authored runs of blank lines, or normalizes each run to one line. |
+| `lineEnding` | `preserve`, `lf`, `crlf` | `preserve` | Keeps the source's line ending, or emits the selected ending. |
 
 The CLI currently exposes declaration alignment:
 
@@ -66,6 +85,11 @@ The CLI currently exposes declaration alignment:
 quintfmt --declaration-alignment types Spec.qnt
 quintfmt --declaration-alignment columns Spec.qnt
 quintfmt --declaration-alignment off Spec.qnt
+quintfmt --definition-spacing compact Spec.qnt
+quintfmt --record-alignment off Spec.qnt
+quintfmt --clause-alignment full Spec.qnt
+quintfmt --blank-lines single Spec.qnt
+quintfmt --line-ending lf Spec.qnt
 quintfmt --config .quintfmt.conf Spec.qnt
 quintfmt --no-config Spec.qnt
 ```
@@ -98,34 +122,56 @@ var phase: Phase
 ```
 
 Alignment is local. It never crosses a blank line, comment, different
-indentation level, nested layout, or the configured padding cap.
+indentation level, or nested layout. When a row would exceed the configured
+padding cap, it begins a new local alignment subgroup rather than disabling
+alignment for its neighbors.
 
-## Blank lines and declaration grouping
+## Clause alignment
 
-This is the next intended style dimension; it is **not implemented yet**.
-The proposed option is:
+`operator` is the default. It keeps ordinary continuation indentation and
+aligns compatible relational operators. `off` keeps ordinary spacing without
+vertical clause alignment. `full` uses operator-led layout for a multiline
+Boolean definition: the first operand aligns after `and ` or `or `, and the
+relational operators share one column.
 
-```ts
-declarationSpacing: "compact" | "groups" | "declarations"
+```quint
+val witness =
+      observation.phase == OutcomeRecorded
+  and state.live        == SciDriftedSnapshot
 ```
 
-| Proposed value | Intended effect |
-| --- | --- |
-| `compact` | Preserve the current compact layout, normalizing repeated blank lines to one. |
-| `groups` | Keep small, tightly parallel declaration groups together; separate groups and comment-led declarations with one blank line. |
-| `declarations` | Give each top-level short declaration its own visual unit. Comments remain attached to the declaration below them. |
+## Definition spacing
 
-`groups` is the likely default once implemented. It matches typical Quint
-specifications: related predicates stay together, while witness explanations,
-actions, invariants, and temporal properties become visibly distinct sections.
+`nontrivial` is the default. It gives a comment-led, trailing-comment, or
+multiline module-level `val`, `def`, `action`, `temporal`, or `nondet`
+definition a blank line after it. Comments attach to the following definition:
+
+```quint
+// Current state observation.
+val observation = observe(state.row)
+
+// Safety property.
+val AtMostOneKnownEffect = observation.knownEffects.size() <= 1
+```
+
+`compact` preserves dense adjacent definitions. Use it when a repository
+prefers blank lines only where authors placed them.
+
+## Blank lines and line endings
+
+`blankLinePolicy: preserve` is the default: authored section spacing remains
+intact, while `definitionSpacing` adds only its own intentional separators.
+Use `single` for a fully compact profile that reduces each blank-line run to one.
+
+`lineEnding: preserve` retains LF or CRLF from the source. Choose `lf` or
+`crlf` when a repository needs one portable, explicit convention.
 
 ## Non-options
 
 Some behavior should remain fixed because configurability would weaken the
 formatter's safety or make repositories noisy:
 
-- Invalid or unsupported source fails without output; there is no best-effort
-  rewrite mode.
+- Invalid source fails without output; there is no best-effort rewrite mode.
 - Block comments are verbatim layout barriers.
 - Comments are neither reflowed nor rewritten.
 - Imports and declarations are never sorted.

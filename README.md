@@ -5,10 +5,11 @@
 [Quint](https://quint-lang.org/). It validates source with a pinned Quint
 grammar before formatting and fails without output on invalid source.
 
-This initial release provides canonical spacing/indentation and restrained
-local alignment for declarations, record fields, assignments, and relational
-action clauses. Alignment never crosses comments, blank lines, nested layout,
-or a twelve-column padding cap.
+This initial release provides canonical spacing/indentation, blank-line
+separation for nontrivial definitions, and restrained local alignment for
+declarations, record fields, assignments, and relational action clauses.
+Alignment never crosses comments, blank lines, or nested layout; a row beyond
+the configured sixteen-column padding cap begins a new local subgroup.
 
 Declaration alignment keeps the colon with its name and aligns only type values
 within a local `const`/`var` group:
@@ -39,8 +40,7 @@ choose declaration alignment. The same setting is available through the
 `format(source, { declarationAlignment })` API.
 
 See [Configuration and style](docs/CONFIGURATION.md) for the complete current
-option contract, `.quintfmt.conf` project files, and proposed declaration-spacing
-policy.
+option contract and `.quintfmt.conf` project files.
 
 ## Guarantees
 
@@ -56,10 +56,9 @@ project declares compatibility by that grammar snapshot.
 
 ## Deliberate limits
 
-This first slice does not wrap long expressions, discover project
-configuration, sort declarations/imports, reflow comments, or offer range/LSP
-formatting. It preserves multiline block comments verbatim and treats them as
-layout barriers.
+This formatter does not yet wrap long expressions, sort declarations/imports,
+reflow comments, or offer range/LSP formatting. It preserves multiline block
+comments verbatim and treats them as layout barriers.
 
 ## Development
 
