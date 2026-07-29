@@ -8,8 +8,9 @@ grammar before formatting and fails without output on invalid source.
 This initial release provides canonical spacing/indentation, blank-line
 separation for nontrivial definitions, and restrained local alignment for
 declarations, record fields, assignments, and relational action clauses.
-Alignment never crosses comments, blank lines, or nested layout; a row beyond
-the configured sixteen-column padding cap begins a new local subgroup.
+Alignment never crosses comments, blank lines, or nested layout. Record fields
+align to their widest field by default; declaration and clause alignment remain
+bounded by the configured sixteen-column padding cap.
 
 Declaration alignment keeps the colon with its name and aligns only type values
 within a local `const`/`var` group:
@@ -28,12 +29,14 @@ def retryAllowed(s): bool
 npm install
 npm run build
 node dist/src/cli.js Spec.qnt
+node dist/src/cli.js --stdout Spec.qnt
 node dist/src/cli.js --check Spec.qnt
-node dist/src/cli.js --write Spec.qnt
 ```
 
-`--write` and `--check` are mutually exclusive. With no file argument,
-`quintfmt` reads stdin and writes formatted source to stdout.
+Named files are formatted in place by default. Use `--stdout` to print their
+formatted contents instead; `--write` / `-w` remain compatibility aliases for
+the default. `--check` is non-mutating. With no file argument, `quintfmt` reads
+stdin and writes formatted source to stdout.
 
 Use `--declaration-alignment types` (the default), `columns`, or `off` to
 choose declaration alignment. The same setting is available through the

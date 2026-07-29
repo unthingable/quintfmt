@@ -5,7 +5,7 @@ import type { FormatOptions } from "./api.js";
 export class ConfigError extends Error {}
 
 const configurationKeys = new Set([
-  "indentWidth", "alignment.mode", "alignment.maxPadding", "alignment.records", "alignment.clauses",
+  "indentWidth", "alignment.mode", "alignment.maxPadding", "alignment.records", "alignment.recordMaxPadding", "alignment.clauses",
   "declarations.alignment", "definitions.spacing", "blankLines.policy", "lineEnding",
 ]);
 
@@ -48,6 +48,12 @@ export function parseConfig(source: string, label = ".quintfmt.conf"): FormatOpt
   const options: FormatOptions = {};
   if (value.has("indentWidth")) options.indentWidth = positiveInteger(Number(value.get("indentWidth")), "indentWidth");
   if (value.has("alignment.maxPadding")) options.maxAlignmentPadding = positiveInteger(Number(value.get("alignment.maxPadding")), "alignment.maxPadding");
+  if (value.has("alignment.recordMaxPadding")) {
+    const padding = value.get("alignment.recordMaxPadding");
+    options.recordMaxAlignmentPadding = padding === "unlimited"
+      ? "unlimited"
+      : positiveInteger(Number(padding), "alignment.recordMaxPadding");
+  }
   if (value.has("alignment.mode")) {
     const mode = value.get("alignment.mode");
     if (mode !== "local" && mode !== "off") throw new ConfigError("alignment.mode must be local or off");

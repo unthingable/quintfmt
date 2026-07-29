@@ -5,6 +5,7 @@ import { QuintParser } from "./generated/vendor/quint/QuintParser.js";
 export interface FormatOptions {
   indentWidth?: number;
   maxAlignmentPadding?: number;
+  recordMaxAlignmentPadding?: number | "unlimited";
   alignment?: "local" | "off";
   declarationAlignment?: "types" | "columns" | "off";
   recordAlignment?: "local" | "off";
@@ -28,6 +29,7 @@ export type FormatResult =
 const defaultOptions: Required<FormatOptions> = {
   indentWidth: 2,
   maxAlignmentPadding: 16,
+  recordMaxAlignmentPadding: "unlimited",
   alignment: "local",
   declarationAlignment: "types",
   recordAlignment: "local",
@@ -164,9 +166,30 @@ function alignDelimited(lines: string[], expression: RegExp, maximumPadding: num
   return match.map((item) => `${item![1].padEnd(width)} ${item![2]} ${item![3]}`);
 }
 
+function alignRecordFields(
+  records: RegExpExecArray[],
+  maximumPadding: Required<FormatOptions>["recordMaxAlignmentPadding"],
+): string[] {
+  const heads = records.map((record) => `${record[1]}:`);
+  const widest = Math.max(...heads.map((head) => head.length));
+  const narrowest = Math.min(...heads.map((head) => head.length));
+  if (maximumPadding === "unlimited" || widest - narrowest <= maximumPadding) {
+    return records.map((record, index) => `${heads[index]!.padEnd(widest)} ${record[2]}`);
+  }
+
+  // Keep the ordinary fields in one column and let only oversize labels extend
+  // to the right. A finite cap should never make the whole record ragged.
+  const target = Math.max(...heads.filter((head) => head.length - narrowest <= maximumPadding).map((head) => head.length));
+  return records.map((record, index) => {
+    const head = heads[index]!;
+    return `${head.length <= target ? head.padEnd(target) : head} ${record[2]}`;
+  });
+}
+
 function alignLocal(
   lines: string[],
   maximumPadding: number,
+  recordMaximumPadding: Required<FormatOptions>["recordMaxAlignmentPadding"],
   declarationAlignment: Required<FormatOptions>["declarationAlignment"],
   recordAlignment: Required<FormatOptions>["recordAlignment"],
   clauseAlignment: Required<FormatOptions>["clauseAlignment"],
@@ -176,11 +199,7 @@ function alignLocal(
   if (declarations !== lines) return declarations;
   const records = lines.map((line) => /^([A-Za-z_][\w]*)\s*:\s*(.+,?)$/.exec(line));
   if (recordAlignment === "local" && records.every(Boolean)) {
-    const heads = records.map((record) => `${record![1]}:`);
-    const width = Math.max(...heads.map((head) => head.length));
-    if (heads.every((head) => width - head.length <= maximumPadding)) {
-      return records.map((record, index) => `${heads[index].padEnd(width)} ${record![2]}`);
-    }
+    return alignRecordFields(records as RegExpExecArray[], recordMaximumPadding);
   }
   return clauseAlignment !== "off"
     ? alignDelimited(lines, /^(.+?)\s*(==|!=|<=|>=|<|>|=)\s*(.+)$/, maximumPadding)
@@ -197,9 +216,9 @@ function alignmentKind(
   // arrow to `= >` during table alignment and makes otherwise valid Quint fail
   // the output reparse.
   if (trimmed.includes("=>")) return null;
-  if (containsStringLiteral(trimmed)) return null;
   if (/^(const|var)\s+[A-Za-z_][\w:]*\s*:/.test(trimmed)) return "declaration";
   if (recordAlignment === "local" && /^[A-Za-z_][\w]*\s*:/.test(trimmed)) return "record";
+  if (containsStringLiteral(trimmed)) return null;
   if (/^(?:pure\s+)?(?:val|def)|^(?:action|temporal|nondet|type|module)\b/.test(trimmed)) return null;
   if (clauseAlignment !== "off" && /^.+?\s*(==|!=|<=|>=|<|>)\s*.+$/.test(trimmed)) return "comparison";
   if (clauseAlignment !== "off" && /^.+?\s*=\s*.+$/.test(trimmed)) return "assignment";
@@ -326,6 +345,14 @@ function isDefinition(line: string): boolean {
   return /^(?:(?:pure\s+)?(?:val|def)|action|temporal|nondet)\b/.test(line.trimStart());
 }
 
+function definitionKind(line: string): string | null {
+  return /^(?:pure\s+)?(val|def|action|temporal|nondet)\b/.exec(line.trimStart())?.[1] ?? null;
+}
+
+function isSimpleDefinition(line: string): boolean {
+  return isDefinition(line) && !/[{]/.test(line) && !line.includes("//");
+}
+
 function indentation(line: string): number {
   return line.length - line.trimStart().length;
 }
@@ -339,6 +366,13 @@ function separateNontrivialDefinitions(lines: string[]): string[] {
   for (let start = 0; start < lines.length; start += 1) {
     if (!isDefinition(lines[start]!)) continue;
     const baseIndentation = indentation(lines[start]!);
+    let hasLeadingComment = false;
+    for (let index = start - 1; index >= 0 && lines[index]!.trim(); index -= 1) {
+      if (isCommentLine(lines[index]!)) hasLeadingComment = true;
+      else break;
+    }
+    const commentLedSimpleGroup = hasLeadingComment && isSimpleDefinition(lines[start]!);
+    const kind = definitionKind(lines[start]!);
     let end = start;
     while (end + 1 < lines.length) {
       const next = lines[end + 1]!;
@@ -349,14 +383,15 @@ function separateNontrivialDefinitions(lines: string[]): string[] {
         const nextDefinition = lines[following + 1];
         if (nextDefinition && isDefinition(nextDefinition) && indentation(nextDefinition) <= baseIndentation) break;
       }
-      if (isDefinition(next) && indentation(next) <= baseIndentation) break;
+      if (isDefinition(next) && indentation(next) <= baseIndentation) {
+        if (commentLedSimpleGroup && isSimpleDefinition(next) && definitionKind(next) === kind) {
+          end += 1;
+          continue;
+        }
+        break;
+      }
       end += 1;
       if (next.trim() === "}" && indentation(next) <= baseIndentation) break;
-    }
-    let hasLeadingComment = false;
-    for (let index = start - 1; index >= 0 && lines[index]!.trim(); index -= 1) {
-      if (isCommentLine(lines[index]!)) hasLeadingComment = true;
-      else break;
     }
     const nontrivial = hasLeadingComment || end > start || lines[start]!.includes("//");
     const next = lines[end + 1];
@@ -391,10 +426,16 @@ function alignWithinPadding(
   island: string[],
   kind: "declaration" | "record" | "comparison" | "assignment",
   maximumPadding: number,
+  recordMaximumPadding: Required<FormatOptions>["recordMaxAlignmentPadding"],
   declarationAlignment: Required<FormatOptions>["declarationAlignment"],
   recordAlignment: Required<FormatOptions>["recordAlignment"],
   clauseAlignment: Required<FormatOptions>["clauseAlignment"],
 ): string[] {
+  if (kind === "record") {
+    const prefixes = island.map((line) => line.match(/^\s*/)?.[0] ?? "");
+    return alignLocal(island.map((line) => line.trimStart()), maximumPadding, recordMaximumPadding, declarationAlignment, recordAlignment, clauseAlignment)
+      .map((line, index) => `${prefixes[index]}${line}`);
+  }
   const output: string[] = [];
   for (let start = 0; start < island.length;) {
     let end = start + 1;
@@ -405,7 +446,7 @@ function alignWithinPadding(
     }
     const group = island.slice(start, end);
     const prefixes = group.map((line) => line.match(/^\s*/)?.[0] ?? "");
-    output.push(...alignLocal(group.map((line) => line.trimStart()), maximumPadding, declarationAlignment, recordAlignment, clauseAlignment)
+    output.push(...alignLocal(group.map((line) => line.trimStart()), maximumPadding, recordMaximumPadding, declarationAlignment, recordAlignment, clauseAlignment)
       .map((line, index) => `${prefixes[index]}${line}`));
     start = end;
   }
@@ -416,6 +457,7 @@ function alignIslands(
   rendered: string[],
   barriers: boolean[],
   maximumPadding: number,
+  recordMaximumPadding: Required<FormatOptions>["recordMaxAlignmentPadding"],
   declarationAlignment: Required<FormatOptions>["declarationAlignment"],
   recordAlignment: Required<FormatOptions>["recordAlignment"],
   clauseAlignment: Required<FormatOptions>["clauseAlignment"],
@@ -433,7 +475,7 @@ function alignIslands(
       && (output[end].match(/^\s*/)?.[0] ?? "") === indentation
     ) end += 1;
     const island = output.slice(start, end);
-    const aligned = alignWithinPadding(island, kind, maximumPadding, declarationAlignment, recordAlignment, clauseAlignment);
+    const aligned = alignWithinPadding(island, kind, maximumPadding, recordMaximumPadding, declarationAlignment, recordAlignment, clauseAlignment);
     output.splice(start, island.length, ...aligned);
     start = end;
   }
@@ -509,6 +551,7 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
         expandedBooleanChains.lines,
         expandedBooleanChains.barriers,
         settings.maxAlignmentPadding,
+        settings.recordMaxAlignmentPadding,
         settings.declarationAlignment,
         settings.recordAlignment,
         settings.clauseAlignment,

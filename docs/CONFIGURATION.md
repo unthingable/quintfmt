@@ -27,6 +27,7 @@ alignment {
   mode = local
   maxPadding = 16
   records = local
+  recordMaxPadding = unlimited
   clauses = operator
 }
 
@@ -59,6 +60,7 @@ format(source, {
   alignment: "local",
   declarationAlignment: "types",
   maxAlignmentPadding: 16,
+  recordMaxAlignmentPadding: "unlimited",
   definitionSpacing: "nontrivial",
   recordAlignment: "local",
   clauseAlignment: "operator",
@@ -73,6 +75,7 @@ format(source, {
 | `alignment` | `local`, `off` | `local` | Enables or disables all local alignment. |
 | `declarationAlignment` | `types`, `columns`, `off` | `types` | Controls alignment within consecutive `const`/`var` groups. |
 | `recordAlignment` | `local`, `off` | `local` | Controls local alignment of record fields and values. |
+| `recordMaxAlignmentPadding` | positive integer, `unlimited` | `unlimited` | Maximum record-field padding. With a finite cap, oversize labels extend right while the ordinary fields stay aligned. |
 | `clauseAlignment` | `off`, `operator`, `full` | `operator` | Controls layout and alignment of compatible action and Boolean clauses. |
 | `maxAlignmentPadding` | positive integer | `16` | Maximum spaces added before a column. The formatter splits a local group rather than creating an excessive gap. |
 | `definitionSpacing` | `nontrivial`, `compact` | `nontrivial` | Adds one blank line after a comment-led, trailing-comment, or multiline module-level definition. |
@@ -87,6 +90,7 @@ quintfmt --declaration-alignment columns Spec.qnt
 quintfmt --declaration-alignment off Spec.qnt
 quintfmt --definition-spacing compact Spec.qnt
 quintfmt --record-alignment off Spec.qnt
+quintfmt --record-max-padding unlimited Spec.qnt
 quintfmt --clause-alignment full Spec.qnt
 quintfmt --blank-lines single Spec.qnt
 quintfmt --line-ending lf Spec.qnt
@@ -122,9 +126,10 @@ var phase: Phase
 ```
 
 Alignment is local. It never crosses a blank line, comment, different
-indentation level, or nested layout. When a row would exceed the configured
-padding cap, it begins a new local alignment subgroup rather than disabling
-alignment for its neighbors.
+indentation level, or nested layout. Declaration and clause rows split at the
+configured generic padding cap. Records default to unlimited alignment; with a
+finite record cap, long labels extend right while the remaining fields retain a
+shared value column.
 
 ## Clause alignment
 
@@ -144,7 +149,10 @@ val witness =
 
 `nontrivial` is the default. It gives a comment-led, trailing-comment, or
 multiline module-level `val`, `def`, `action`, `temporal`, or `nondet`
-definition a blank line after it. Comments attach to the following definition:
+definition a blank line after it. A comment followed by a contiguous run of
+simple definitions of the same kind introduces that whole run, so its separator
+appears after the run rather than after the first definition. Comments otherwise
+attach to the following definition:
 
 ```quint
 // Current state observation.

@@ -43,6 +43,28 @@ test("aligns record fields and action relations locally", () => {
   assert.match(result.formatted, /retries'\s+= retries \+ 1,/);
 });
 
+test("aligns record values with strings and does not cap records by default", () => {
+  const source = `module Demo {\n  val request = {\n    id: "billing",\n    destinationId: "accounting",\n    selectedHeadersDigest: "headers",\n    method: "POST",\n  }\n}\n`;
+  const result = format(source);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /id:\s+"billing",/);
+  assert.match(result.formatted, /destinationId:\s+"accounting",/);
+  assert.match(result.formatted, /selectedHeadersDigest: "headers",/);
+  assert.match(result.formatted, /method:\s+"POST",/);
+});
+
+test("keeps ordinary record fields aligned around a finite-cap outlier", () => {
+  const source = `module Demo {\n  val request = {\n    id: value,\n    name: value,\n    extraordinarilyLongField: value,\n    kind: value,\n  }\n}\n`;
+  const result = format(source, { recordMaxAlignmentPadding: 4 });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /id:\s+value,/);
+  assert.match(result.formatted, /name: value,/);
+  assert.match(result.formatted, /extraordinarilyLongField: value,/);
+  assert.match(result.formatted, /kind:\s+value,/);
+});
+
 test("is idempotent and rejects malformed Quint without output", () => {
   const source = `module Demo {\nvar a:int\nvar longer:int\n}\n`;
   const first = format(source);
@@ -144,13 +166,13 @@ test("normalizes singleton braces without a dangling closing line", () => {
   assert.match(multiline.formatted, /val Set = \{\n    X\n  \}/);
 });
 
-test("splits local alignment at the configured padding cap", () => {
+test("does not apply the generic padding cap to records", () => {
   const source = `module Demo {\n  type Record = {\n    extraordinarilyLongField: str,\n    x: str,\n    y: str,\n  }\n}\n`;
   const result = format(source, { maxAlignmentPadding: 12 });
   assert.equal(result.ok, true);
   if (!result.ok) return;
   assert.match(result.formatted, /extraordinarilyLongField: str,/);
-  assert.match(result.formatted, /\n    x: str,\n    y: str,/);
+  assert.match(result.formatted, /\n    x:\s+str,\n    y:\s+str,/);
 });
 
 test("separates comment-led and multiline definitions by default", () => {
@@ -164,6 +186,14 @@ test("separates comment-led and multiline definitions by default", () => {
   assert.match(defaultResult.formatted, /first \+ second\n\n  val fourth = 4/);
   assert.doesNotMatch(compactResult.formatted, /val first = 1\n\n/);
   assert.doesNotMatch(compactResult.formatted, /first \+ second\n\n/);
+});
+
+test("keeps a comment-led run of simple definitions together", () => {
+  const source = `module Demo {\n  // bounds\n  pure val SoftBound = 1\n  pure val HardBound = 2\n  pure val MaxClock = 5\n  // identity\n  pure val TheStage = "stage"\n}\n`;
+  const result = format(source);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /SoftBound = 1\n  pure val HardBound = 2\n  pure val MaxClock = 5\n\n  \/\/ identity/);
 });
 
 test("lays out multiline Boolean definition chains beneath their header", () => {
