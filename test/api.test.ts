@@ -196,6 +196,14 @@ test("keeps a comment-led run of simple definitions together", () => {
   assert.match(result.formatted, /SoftBound = 1\n  pure val HardBound = 2\n  pure val MaxClock = 5\n\n  \/\/ identity/);
 });
 
+test("does not group a comment-led multiline definition with the next definition", () => {
+  const source = `module Demo {\n  // explanation\n  pure val first: int =\n    1 + 2\n  pure val second = 2\n}\n`;
+  const result = format(source);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /1 \+ 2\n\n  pure val second = 2/);
+});
+
 test("lays out multiline Boolean definition chains beneath their header", () => {
   const source = `module Demo {\n  val SciDriftEarlyN0Witness = observation.phase == OutcomeRecorded\n  and state.live == SciDriftedSnapshot\n  and observation.outcome == OutcomeN0\n  and observation.commitReceipt == NoCommitReceipt\n}\n`;
   const result = format(source);

@@ -350,7 +350,10 @@ function definitionKind(line: string): string | null {
 }
 
 function isSimpleDefinition(line: string): boolean {
-  return isDefinition(line) && !/[{]/.test(line) && !line.includes("//");
+  return isDefinition(line)
+    && !/[{]/.test(line)
+    && !line.includes("//")
+    && !/=\s*$/.test(line);
 }
 
 function indentation(line: string): number {

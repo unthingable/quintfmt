@@ -3,29 +3,41 @@
   "version": "0.1.0",
   "description": "A conservative, comment-preserving formatter for Quint.",
   "license": "MIT",
-  "bin": {
-    "quintfmt": "./dist/src/cli.js"
+  "keywords": ["quint", "formatter", "formal-methods", "model-checking"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/unthingable/quintfmt.git"
   },
+  "homepage": "https://github.com/unthingable/quintfmt#readme",
+  "bugs": {
+    "url": "https://github.com/unthingable/quintfmt/issues"
+  },
+  "engines": {
+    "node": "^20.0.0 || ^22.0.0"
+  },
+  "bin": "dist/src/cli.js",
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/src/index.d.ts",
-      "require": "./dist/src/index.js"
+      "require": "./dist/src/index.js",
+      "import": "./dist/src/index.js",
+      "default": "./dist/src/index.js"
     }
   },
-  "files": ["dist/src", "README.md", "LICENSE", "vendor/quint/UPSTREAM.md", "vendor/quint/LICENSE"],
+  "files": ["dist/src", "docs", "README.md", "CHANGELOG.md", "LICENSE", "vendor/quint/UPSTREAM.md", "vendor/quint/LICENSE"],
   "scripts": {
     "clean": "node ./scripts/clean-dist.mjs",
     "generate": "antlr4ts -visitor -o src/generated vendor/quint/Quint.g4",
     "build": "npm run clean && npm run generate && tsc -p tsconfig.json && node ./scripts/make-cli-executable.mjs",
     "test": "npm run build && node --test dist/test/*.test.js",
-    "check": "npm test",
+    "test:package": "node ./scripts/package-smoke.mjs",
+    "check": "npm test && npm run test:package",
     "prepack": "npm run build"
   },
   "dependencies": {
-    "antlr4ts": "0.5.0-alpha.4",
-    "string-width": "7.2.0"
+    "antlr4ts": "0.5.0-alpha.4"
   },
   "devDependencies": {
     "@types/node": "22.15.3",

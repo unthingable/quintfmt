@@ -59,3 +59,12 @@ test("formats named files in place by default and supports --stdout", async () =
   assert.equal(formatted.stdout, "");
   assert.match(await readFile(file, "utf8"), /var x: int/);
 });
+
+test("reports help and the package version", () => {
+  const help = spawnSync(process.execPath, [cli, "--help"], { encoding: "utf8" });
+  const version = spawnSync(process.execPath, [cli, "--version"], { encoding: "utf8" });
+  assert.equal(help.status, 0);
+  assert.match(help.stdout, /Named files are formatted in place by default/);
+  assert.equal(version.status, 0);
+  assert.match(version.stdout, /^0\.1\.0\n$/);
+});

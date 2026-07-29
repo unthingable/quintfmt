@@ -1,4 +1,4 @@
-<!-- provenance: agent-authored; created: 2026-07-27; updated: 2026-07-27 -->
+<!-- provenance: agent-authored; created: 2026-07-27; updated: 2026-07-30 -->
 # quintfmt
 
 `quintfmt` is a conservative, comment-preserving formatter for
@@ -23,20 +23,32 @@ var   phase:       Phase
 def retryAllowed(s): bool
 ```
 
-## Use
+## Install and use
 
 ```sh
-npm install
-npm run build
-node dist/src/cli.js Spec.qnt
-node dist/src/cli.js --stdout Spec.qnt
-node dist/src/cli.js --check Spec.qnt
+npm install --global quintfmt
+quintfmt Spec.qnt
 ```
 
-Named files are formatted in place by default. Use `--stdout` to print their
-formatted contents instead; `--write` / `-w` remain compatibility aliases for
-the default. `--check` is non-mutating. With no file argument, `quintfmt` reads
-stdin and writes formatted source to stdout.
+> **Important:** `quintfmt Spec.qnt` rewrites `Spec.qnt` in place. Use
+> `quintfmt --stdout Spec.qnt` to preview output, or `quintfmt --check Spec.qnt`
+> for CI. With no file argument, it reads stdin and writes formatted source to
+> stdout.
+
+Without a global install:
+
+```sh
+npx quintfmt --stdout Spec.qnt
+```
+
+The library API is available to both CommonJS and ESM consumers:
+
+```js
+import { format } from "quintfmt"
+
+const result = format('module Demo { var owner:str }')
+if (result.ok) console.log(result.formatted)
+```
 
 Use `--declaration-alignment types` (the default), `columns`, or `off` to
 choose declaration alignment. The same setting is available through the
@@ -67,7 +79,15 @@ comments verbatim and treats them as layout barriers.
 
 ```sh
 npm test
+npm run check # includes an installed-tarball smoke test
 ```
+
+## Releases
+
+The release gate tests the packed npm artifact, including its executable,
+CommonJS and ESM entry points. Formatter behavior and configuration defaults
+are pre-1.0 and may change in minor releases; compatibility with Quint is tied
+to the vendored grammar snapshot.
 
 ## License
 

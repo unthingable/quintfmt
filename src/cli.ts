@@ -1,5 +1,7 @@
 #!/usr/bin/env node
+import { readFileSync } from "node:fs";
 import { chmod, lstat, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { format } from "./api.js";
 import { ConfigError, findConfig, loadConfig } from "./config.js";
 
@@ -8,6 +10,8 @@ function parseArguments(args: string[]): {
   write: boolean;
   stdout: boolean;
   check: boolean;
+  help: boolean;
+  version: boolean;
   declarationAlignment?: "types" | "columns" | "off";
   definitionSpacing?: "nontrivial" | "compact";
   recordAlignment?: "local" | "off";
@@ -21,6 +25,8 @@ function parseArguments(args: string[]): {
   let write = false;
   let stdout = false;
   let check = false;
+  let help = false;
+  let version = false;
   let declarationAlignment: "types" | "columns" | "off" | undefined;
   let definitionSpacing: "nontrivial" | "compact" | undefined;
   let recordAlignment: "local" | "off" | undefined;
@@ -33,7 +39,9 @@ function parseArguments(args: string[]): {
   const files: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index]!;
-    if (argument === "--write" || argument === "-w") write = true;
+    if (argument === "--help" || argument === "-h") help = true;
+    else if (argument === "--version" || argument === "-v") version = true;
+    else if (argument === "--write" || argument === "-w") write = true;
     else if (argument === "--stdout") stdout = true;
     else if (argument === "--check") check = true;
     else if (argument === "--no-config") useConfig = false;
@@ -106,7 +114,13 @@ function parseArguments(args: string[]): {
     } else if (argument.startsWith("-")) throw new Error(`unknown option: ${argument}`);
     else files.push(argument);
   }
-  return { files, write, stdout, check, declarationAlignment, definitionSpacing, recordAlignment, recordMaxAlignmentPadding, clauseAlignment, blankLinePolicy, lineEnding, configPath, useConfig };
+  return { files, write, stdout, check, help, version, declarationAlignment, definitionSpacing, recordAlignment, recordMaxAlignmentPadding, clauseAlignment, blankLinePolicy, lineEnding, configPath, useConfig };
+}
+
+const helpText = `Usage: quintfmt [options] [files...]\n\nNamed files are formatted in place by default. With no files, source is read from stdin and written to stdout.\n\nOptions:\n  -h, --help                         Show this help\n  -v, --version                      Show the installed version\n  -w, --write                        Explicit alias for in-place formatting\n      --stdout                       Print formatted named files to stdout\n      --check                        Exit 1 when named files need formatting\n      --config <path>                Use a .quintfmt.conf file\n      --no-config                    Ignore configuration discovery\n      --declaration-alignment <mode> types, columns, or off\n      --definition-spacing <mode>    nontrivial or compact\n      --record-alignment <mode>      local or off\n      --record-max-padding <value>   positive integer or unlimited\n      --clause-alignment <mode>      off, operator, or full\n      --blank-lines <mode>           preserve or single\n      --line-ending <mode>           preserve, lf, or crlf\n`;
+
+function packageVersion(): string {
+  return (JSON.parse(readFileSync(resolve(__dirname, "../../package.json"), "utf8")) as { version: string }).version;
 }
 
 async function main(): Promise<void> {
@@ -118,7 +132,15 @@ async function main(): Promise<void> {
     process.exitCode = 2;
     return;
   }
-  const { files, write, stdout, check, declarationAlignment, definitionSpacing, recordAlignment, recordMaxAlignmentPadding, clauseAlignment, blankLinePolicy, lineEnding, configPath, useConfig } = parsedArguments;
+  const { files, write, stdout, check, help, version, declarationAlignment, definitionSpacing, recordAlignment, recordMaxAlignmentPadding, clauseAlignment, blankLinePolicy, lineEnding, configPath, useConfig } = parsedArguments;
+  if (help) {
+    process.stdout.write(helpText);
+    return;
+  }
+  if (version) {
+    process.stdout.write(`${packageVersion()}\n`);
+    return;
+  }
   let options;
   try {
     const discovered = useConfig ? await findConfig() : null;

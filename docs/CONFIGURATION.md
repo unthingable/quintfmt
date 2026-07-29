@@ -1,4 +1,4 @@
-<!-- provenance: agent-authored; created: 2026-07-27 -->
+<!-- provenance: agent-authored; created: 2026-07-27; updated: 2026-07-30 -->
 # Configuration and style
 
 `quintfmt` aims for the useful part of the `scalafmt` model: one stable,
@@ -184,8 +184,8 @@ formatter's safety or make repositories noisy:
 - Comments are neither reflowed nor rewritten.
 - Imports and declarations are never sorted.
 - Alignment is bounded and local, never a file-wide table.
-- Line wrapping, range formatting, editor integration, and configuration-file
-  discovery are not part of the initial formatter slice.
+- Line wrapping, range formatting, and editor integration are not part of the
+  initial formatter slice.
 
 ## Adding an option
 
