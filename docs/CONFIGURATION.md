@@ -1,4 +1,3 @@
-<!-- provenance: agent-authored; created: 2026-07-27; updated: 2026-07-30 -->
 # Configuration and style
 
 `quintfmt` aims for the useful part of the `scalafmt` model: one stable,

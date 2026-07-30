@@ -1,4 +1,3 @@
-<!-- provenance: agent-authored; created: 2026-07-27 -->
 # Vendored Quint grammar
 
 Source: `quint-co/quint`, commit

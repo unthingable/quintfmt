@@ -1,93 +1,142 @@
-<!-- provenance: agent-authored; created: 2026-07-27; updated: 2026-07-30 -->
 # quintfmt
 
-`quintfmt` is a conservative, comment-preserving formatter for
-[Quint](https://quint-lang.org/). It validates source with a pinned Quint
-grammar before formatting and fails without output on invalid source.
+`quintfmt` formats Quint source into one stable, comment-preserving style. It
+normalizes spacing and indentation, uses restrained local alignment, and fails
+without output when the input is not valid for its pinned Quint grammar.
 
-This initial release provides canonical spacing/indentation, blank-line
-separation for nontrivial definitions, and restrained local alignment for
-declarations, record fields, assignments, and relational action clauses.
-Alignment never crosses comments, blank lines, or nested layout. Record fields
-align to their widest field by default; declaration and clause alignment remain
-bounded by the configured sixteen-column padding cap.
+It is pre-1.0 software: use it to make supported Quint modules easier to scan,
+then keep `--check` in CI to hold the chosen style.
 
-Declaration alignment keeps the colon with its name and aligns only type values
-within a local `const`/`var` group:
+## Before and after
 
 ```quint
-const maxAttempts: int
-var   owner:       str
-var   phase:       Phase
+// before
+module Counter {
+var count:int
+action step=all {
+count'=count+1,
+}
+}
 
-def retryAllowed(s): bool
+// after
+module Counter {
+  var count: int
+  action step = all {
+    count' = count + 1,
+  }
+}
 ```
 
 ## Install and use
+
+Requires Node.js 20 or 22.
+
+> **Named files are formatted in place by default.** Preview safely with
+> `--stdout`, or use `--check` in CI. With no file argument, `quintfmt` reads
+> stdin and writes formatted source to stdout.
+
+```sh
+# No installation: preview output
+npx quintfmt --stdout Spec.qnt
+
+# Check whether a file already matches the style; exits 1 when it does not
+npx quintfmt --check Spec.qnt
+
+# Safe filter form; reads stdin and writes formatted source to stdout
+cat Spec.qnt | npx quintfmt
+```
+
+Once the result looks right, format in place:
+
+```sh
+npx quintfmt Spec.qnt
+```
+
+For a project-local install:
+
+```sh
+npm install --save-dev quintfmt
+npx quintfmt --check Spec.qnt
+```
+
+For a global command:
 
 ```sh
 npm install --global quintfmt
 quintfmt Spec.qnt
 ```
 
-> **Important:** `quintfmt Spec.qnt` rewrites `Spec.qnt` in place. Use
-> `quintfmt --stdout Spec.qnt` to preview output, or `quintfmt --check Spec.qnt`
-> for CI. With no file argument, it reads stdin and writes formatted source to
-> stdout.
+`--write` / `-w` are explicit aliases for the default in-place behavior. Run
+`quintfmt --help` for the complete CLI reference.
 
-Without a global install:
+## Style and configuration
 
-```sh
-npx quintfmt --stdout Spec.qnt
+The default style uses two-space indentation, aligns local declarations and
+record fields, and separates nontrivial definitions. Record fields align to
+their widest name by default; declaration and Boolean/action-clause alignment
+remain locally bounded.
+
+Declaration alignment keeps `:` attached to its name and aligns the type value:
+
+```quint
+const maxAttempts: int
+var owner:         str
+var phase:         Phase
 ```
 
-The library API is available to both CommonJS and ESM consumers:
+Use a `.quintfmt.conf` file for team-level choices such as declaration columns,
+record alignment, clause alignment, blank-line handling, and line endings. See
+[Configuration and style](docs/CONFIGURATION.md), available both in the npm
+package and the GitHub repository.
+
+## API
+
+The package supports both CommonJS and ESM imports.
 
 ```js
+// ESM
 import { format } from "quintfmt"
 
-const result = format('module Demo { var owner:str }')
+const result = format("module Demo { var owner:str }")
 if (result.ok) console.log(result.formatted)
 ```
 
-Use `--declaration-alignment types` (the default), `columns`, or `off` to
-choose declaration alignment. The same setting is available through the
-`format(source, { declarationAlignment })` API.
+```js
+// CommonJS
+const { format } = require("quintfmt")
+```
 
-See [Configuration and style](docs/CONFIGURATION.md) for the complete current
-option contract and `.quintfmt.conf` project files.
+`format()` returns diagnostics and no formatted text when parsing or formatter
+validation fails.
 
-## Guarantees
+## Guarantees and limits
 
-- significant token text and order are preserved;
-- ordinary, documentation, and block comment text is preserved;
-- formatting is idempotent;
-- malformed source produces diagnostics and no partial output.
+- Significant token text and order are preserved.
+- Ordinary, documentation, and block-comment text is preserved.
+- Formatting is idempotent.
+- Invalid source produces diagnostics and no partial output.
 
-The parser is generated from a vendored Quint grammar snapshot. See
-[vendor/quint/UPSTREAM.md](vendor/quint/UPSTREAM.md) for the exact upstream
-commit and the narrow formatter patch. Quint evolves independently; this
-project declares compatibility by that grammar snapshot.
+The formatter does not wrap long expressions, sort imports or declarations,
+reflow comments, or provide range/LSP formatting. Multiline block comments are
+preserved verbatim and act as layout barriers.
 
-## Deliberate limits
+## Compatibility
 
-This formatter does not yet wrap long expressions, sort declarations/imports,
-reflow comments, or offer range/LSP formatting. It preserves multiline block
-comments verbatim and treats them as layout barriers.
+`quintfmt` validates against the vendored Quint grammar snapshot from
+[`quint-co/quint` commit `4e6a580`](vendor/quint/UPSTREAM.md). Quint evolves
+independently, so compatibility is declared by that snapshot rather than by an
+unbounded Quint version range.
 
-## Development
+## Development and releases
 
 ```sh
 npm test
-npm run check # includes an installed-tarball smoke test
+npm run check
 ```
 
-## Releases
-
-The release gate tests the packed npm artifact, including its executable,
-CommonJS and ESM entry points. Formatter behavior and configuration defaults
-are pre-1.0 and may change in minor releases; compatibility with Quint is tied
-to the vendored grammar snapshot.
+`npm run check` additionally installs and exercises the packed npm artifact:
+its CLI plus CommonJS and ESM entry points. See [CHANGELOG.md](CHANGELOG.md)
+for release notes.
 
 ## License
 

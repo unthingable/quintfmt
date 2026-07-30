@@ -1,4 +1,3 @@
-<!-- provenance: agent-authored; created: 2026-07-30 -->
 # Changelog
 
 ## 0.1.0
