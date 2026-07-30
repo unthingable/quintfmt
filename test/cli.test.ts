@@ -68,5 +68,5 @@ test("reports help and the package version", () => {
   assert.match(help.stdout, /--max-line-length <columns>/);
   assert.doesNotMatch(help.stdout, /\\n/);
   assert.equal(version.status, 0);
-  assert.match(version.stdout, /^0\.1\.0\n$/);
+  assert.match(version.stdout, /^0\.2\.0\n$/);
 });

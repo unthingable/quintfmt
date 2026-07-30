@@ -134,6 +134,51 @@ test("formats Quint type definitions and match expressions", () => {
   assert.deepEqual(format(result.formatted), result);
 });
 
+test("breaks a definition before a match body regardless of line width", () => {
+  const source = `module Demo {\n  action choose(worker: Worker): bool = match state.workers.get(worker) {\n    | Ready => true\n    | _ => false\n  }\n}\n`;
+  const result = format(source, { maxLineLength: 200 });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /action choose\(worker: Worker\): bool =\n    match state\.workers\.get\(worker\) \{/);
+  assert.deepEqual(format(result.formatted, { maxLineLength: 200 }), result);
+});
+
+test("keeps a complete one-line match definition inline", () => {
+  const source = `module Demo {\n  val choose = match value { | Ready => true | _ => false }\n}\n`;
+  const result = format(source, { maxLineLength: 200 });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /val choose = match value \{ \| Ready => true \| _ => false \}/);
+  assert.deepEqual(format(result.formatted, { maxLineLength: 200 }), result);
+});
+
+test("does not leak match-arm indentation through a verbatim comment body", () => {
+  const source = `module Demo {\n  val choose = match value {\n    | Ready =>\n    /* keep */ true\n    | _ => false\n  }\n}\n`;
+  const result = format(source);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /\n      \| _ => false/);
+  assert.deepEqual(format(result.formatted), result);
+});
+
+test("does not leak match-body indentation through a verbatim closing line", () => {
+  const source = `module Demo {\n  val choose = match value {\n    | Ready => true\n    /* close */ }\n  val after = 1\n}\n`;
+  const result = format(source);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /\/\* close \*\/ \}\n  val after = 1\n}/);
+  assert.deepEqual(format(result.formatted), result);
+});
+
+test("keeps outer match layout state after a nested match closes", () => {
+  const source = `module Demo {\n  val result = match outer {\n    | A =>\n      val inner = match value {\n        | B => true\n        | _ => false\n      }\n      inner\n    | _ => false\n  }\n}\n`;
+  const result = format(source, { maxLineLength: 200 });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /\n      inner\n      \| _ => false\n    }\n}/);
+  assert.deepEqual(format(result.formatted, { maxLineLength: 200 }), result);
+});
+
 test("keeps nested action assignments in their own alignment island", () => {
   const source = `module Demo {\naction extraordinarilyLongStep=all {\nx'=1,\nlonger'=2,\n}\n}\n`;
   const result = format(source);
@@ -260,11 +305,12 @@ test("full clause alignment hangs match-arm connectors while aligning operands",
   const result = format(source, { clauseAlignment: "full" });
   assert.equal(result.ok, true);
   if (!result.ok) return;
-  assert.match(result.formatted, /CommittedForDispatch\(committed\) =>\n        committed\.contract/);
-  assert.match(result.formatted, /\n    and committed\.capability/);
+  assert.match(result.formatted, /CommittedForDispatch\(committed\) =>\n          committed\.contract/);
+  assert.match(result.formatted, /\n      and committed\.capability/);
   const lines = result.formatted.split("\n");
-  assert.equal(lines[3]!.indexOf("=="), lines[4]!.indexOf("=="));
-  assert.equal(lines[4]!.indexOf("=="), lines[5]!.indexOf("=="));
+  const clauses = lines.filter((line) => /committed\.(?:contract|capability|receipt)/.test(line));
+  assert.equal(clauses[0]!.indexOf("=="), clauses[1]!.indexOf("=="));
+  assert.equal(clauses[1]!.indexOf("=="), clauses[2]!.indexOf("=="));
   assert.deepEqual(format(result.formatted, { clauseAlignment: "full" }), result);
 });
 
@@ -273,7 +319,7 @@ test("full clause alignment leaves a single match-arm comparison at its normal i
   const result = format(source, { clauseAlignment: "full" });
   assert.equal(result.ok, true);
   if (!result.ok) return;
-  assert.match(result.formatted, /Some\(v\) =>\n    v == expected/);
+  assert.match(result.formatted, /Some\(v\) =>\n        v == expected/);
   assert.deepEqual(format(result.formatted, { clauseAlignment: "full" }), result);
 });
 
@@ -308,6 +354,109 @@ test("wraps headers with operator and parenthesized return types without mistaki
   assert.match(result.formatted, /\): int => bool =\n    firstParameter == secondParameter/);
   assert.match(result.formatted, /\): \(int => bool\) =\n    choose/);
   assert.deepEqual(format(result.formatted, { maxLineLength: 60 }), result);
+});
+
+test("wraps the deepest oversized call in a multiline match arm", () => {
+  const source = `module Demo {\n  action issueC1Grant(worker: Worker): bool = match state.workers.get(worker) {\n    | WorkerObserved(observed) => all {\n      not(state.c1Grants.contains(c1GrantFor(worker, observed.stageId, observed.fence, state.authority.liveSnapshot)))\n    }\n  }\n}\n`;
+  const result = format(source, { maxLineLength: 80 });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /not\(state\.c1Grants\.contains\(c1GrantFor\(\n          worker,\n          observed\.stageId,\n          observed\.fence,\n          state\.authority\.liveSnapshot\n        \)\)\)/);
+  assert.deepEqual(format(result.formatted, { maxLineLength: 80 }), result);
+});
+
+test("does not wrap a multi-argument match-arm call that already fits", () => {
+  const source = `module Demo {\n  val result = match value {\n    | Some(v) => all {\n      f(a, b)\n    }\n    | _ => fallback\n  }\n}\n`;
+  const result = format(source, { maxLineLength: 100 });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /f\(a, b\)/);
+  assert.doesNotMatch(result.formatted, /f\(\n/);
+  assert.deepEqual(format(result.formatted, { maxLineLength: 100 }), result);
+});
+
+test("preserves a chained dot-call receiver when wrapping its arguments", () => {
+  const source = `module Demo {\n  val result = match value {\n    | Some(v) => all {\n      not(factory(worker).make(observed.stageId, observed.fence, state.authority.liveSnapshot))\n    }\n    | _ => fallback\n  }\n}\n`;
+  const result = format(source, { maxLineLength: 65 });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /not\(factory\(worker\)\.make\(\n/);
+  assert.match(result.formatted, /state\.authority\.liveSnapshot\n        \)\)/);
+  assert.deepEqual(format(result.formatted, { maxLineLength: 65 }), result);
+});
+
+test("preserves parenthesized call arguments when wrapping", () => {
+  const source = `module Demo {\n  val result = match value {\n    | Some(v) => all {\n      not(factory(worker).make((worker), observed.stageId, (observed.fence)))\n    }\n    | _ => fallback\n  }\n}\n`;
+  const result = format(source, { maxLineLength: 40 });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /factory\(worker\)\.make\(\n/);
+  assert.match(result.formatted, /\(worker\),\n/);
+  assert.match(result.formatted, /\(observed\.fence\)\n        \)\)/);
+  assert.deepEqual(format(result.formatted, { maxLineLength: 40 }), result);
+});
+
+test("limits call wrapping to comment-free multiline match arms", () => {
+  const outsideMatch = `module Demo {\n  val result = c1GrantFor(worker, observed.stageId, observed.fence, state.authority.liveSnapshot)\n}\n`;
+  const oneLineMatch = `module Demo {\n  val result = match value { | Some(v) => c1GrantFor(worker, observed.stageId, observed.fence, state.authority.liveSnapshot) }\n}\n`;
+  const commentedArm = `module Demo {\n  val result = match value {\n    | Some(v) => c1GrantFor(worker, observed.stageId, observed.fence, state.authority.liveSnapshot) // keep\n    | _ => fallback\n  }\n}\n`;
+  const leadingComment = `module Demo {\n  val result = match value {\n    | Some(v) => /* keep */ c1GrantFor(worker, observed.stageId, observed.fence, state.authority.liveSnapshot)\n    | _ => fallback\n  }\n}\n`;
+  for (const source of [outsideMatch, oneLineMatch, commentedArm, leadingComment]) {
+    const result = format(source, { maxLineLength: 80 });
+    assert.equal(result.ok, true);
+    if (!result.ok) continue;
+    assert.doesNotMatch(result.formatted, /c1GrantFor\(\n/);
+    if (source === commentedArm || source === leadingComment) assert.match(result.formatted, /keep/);
+    assert.deepEqual(format(result.formatted, { maxLineLength: 80 }), result);
+  }
+});
+
+test("treats every line spanned by a block comment as a call-wrap barrier", () => {
+  const source = `module Demo {\n  val result = match value {\n    | Some(v) => all {\n      /* keep\n      */ longCall(firstLongArgument, secondLongArgument, thirdLongArgument)\n    }\n    | _ => fallback\n  }\n}\n`;
+  const result = format(source, { maxLineLength: 60 });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /\*\/ longCall\(firstLongArgument, secondLongArgument, thirdLongArgument\)/);
+  assert.doesNotMatch(result.formatted, /longCall\(\n/);
+  assert.deepEqual(format(result.formatted, { maxLineLength: 60 }), result);
+});
+
+test("keeps full-clause alignment when wrapping a match-arm call", () => {
+  const source = `module Demo {\n  val result = match value {\n    | Some(v) =>\n      extraordinarilyLongPredicateName == ExpectedValue\n      and short == longCall(firstLongArgument, secondLongArgument, thirdLongArgument)\n    | _ => false\n  }\n}\n`;
+  const result = format(source, { clauseAlignment: "full", maxLineLength: 70 });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /and short\s+== longCall\(\n/);
+  assert.deepEqual(format(result.formatted, { clauseAlignment: "full", maxLineLength: 70 }), result);
+});
+
+test("keeps Boolean clause groups stable after a wrapped call", () => {
+  const source = `module Demo {\n  val result = match value {\n    | Some(v) =>\n      extraordinarilyLongPredicateName == ExpectedValue\n      and short == longCall(firstLongArgument, secondLongArgument, thirdLongArgument)\n      and mediumName == FinalValue\n    | _ => false\n  }\n}\n`;
+  for (const clauseAlignment of ["operator", "full"] as const) {
+    const result = format(source, { clauseAlignment, maxLineLength: 70 });
+    assert.equal(result.ok, true);
+    if (!result.ok) continue;
+    assert.match(result.formatted, /longCall\(\n/);
+    assert.deepEqual(format(result.formatted, { clauseAlignment, maxLineLength: 70 }), result);
+  }
+});
+
+test("wraps a call made oversized by full-clause alignment", () => {
+  const source = `module Demo {\n  val result = match value {\n    | Some(v) =>\n      extraordinarilyLongPredicateName == ExpectedValue\n      and x == longCall(firstArgument, secondArgument, thirdArgument)\n    | _ => false\n  }\n}\n`;
+  const result = format(source, { clauseAlignment: "full", maxLineLength: 70 });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /and x\s+== longCall\(\n/);
+  assert.deepEqual(format(result.formatted, { clauseAlignment: "full", maxLineLength: 70 }), result);
+});
+
+test("propagates same-line match closures through the layout stack", () => {
+  const source = `module Demo {\n  val result = match outer {\n    | A =>\n      val inner = match value {\n        | B => true\n      } inner }\n  val after = 1\n}\n`;
+  const result = format(source, { maxLineLength: 200 });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /\n  val after = 1\n}/);
+  assert.deepEqual(format(result.formatted, { maxLineLength: 200 }), result);
 });
 
 test("keeps multiline definition parameter state local across comments and later definitions", () => {

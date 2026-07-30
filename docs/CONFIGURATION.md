@@ -73,7 +73,7 @@ format(source, {
 | Option | Values | Default | Meaning |
 | --- | --- | --- | --- |
 | `indentWidth` | positive integer | `2` | Spaces used for block indentation. |
-| `maxLineLength` | positive integer | `100` | Target width for supported wrapping. Long definition parameter lists wrap one parameter per line. Indivisible tokens and expressions may exceed it. |
+| `maxLineLength` | positive integer | `100` | Target width for supported wrapping. Long definition parameter lists and comment-free multi-argument calls in multiline match arms wrap one item per line. Indivisible tokens and expressions may exceed it. |
 | `alignment` | `local`, `off` | `local` | Enables or disables all local alignment. |
 | `declarationAlignment` | `types`, `columns`, `off` | `types` | Controls alignment within consecutive `const`/`var` groups. |
 | `recordAlignment` | `local`, `off` | `local` | Controls local alignment of record fields and values. |

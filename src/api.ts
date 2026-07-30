@@ -1,6 +1,6 @@
-import { CharStreams, CommonTokenStream, Token } from "antlr4ts";
+import { CharStreams, CommonTokenStream, ParserRuleContext, Token } from "antlr4ts";
 import { QuintLexer } from "./generated/vendor/quint/QuintLexer.js";
-import { QuintParser } from "./generated/vendor/quint/QuintParser.js";
+import { DotCallContext, MatchContext, MatchSumCaseContext, OperAppContext, QuintParser } from "./generated/vendor/quint/QuintParser.js";
 
 export interface FormatOptions {
   indentWidth?: number;
@@ -43,7 +43,7 @@ const defaultOptions: Required<FormatOptions> = {
 
 type Line = { source: string; tokens: Token[]; comments: Token[]; barrier: boolean; verbatim: boolean };
 
-function parse(source: string): { tokens: Token[]; diagnostics: Diagnostic[] } {
+function parse(source: string): { tokens: Token[]; diagnostics: Diagnostic[]; tree: ReturnType<QuintParser["modules"]> } {
   const lexer = new QuintLexer(CharStreams.fromString(source));
   const diagnostics: Diagnostic[] = [];
   lexer.removeErrorListeners();
@@ -60,7 +60,7 @@ function parse(source: string): { tokens: Token[]; diagnostics: Diagnostic[] } {
       diagnostics.push({ code: "QFMT_PARSE", line, column: column + 1, message });
     },
   });
-  parser.modules();
+  const tree = parser.modules();
   const tapeLexer = new QuintLexer(CharStreams.fromString(source));
   tapeLexer.removeErrorListeners();
   tapeLexer.addErrorListener({
@@ -68,7 +68,11 @@ function parse(source: string): { tokens: Token[]; diagnostics: Diagnostic[] } {
       diagnostics.push({ code: "QFMT_PARSE", line, column: column + 1, message });
     },
   });
-  return { tokens: tapeLexer.getAllTokens().filter((token) => token.type !== Token.EOF), diagnostics };
+  const tokens = tapeLexer.getAllTokens().filter((token) => token.type !== Token.EOF);
+  // `getAllTokens()` does not populate token indexes, while the parser's CST
+  // spans are indexed over the same complete token stream.
+  tokens.forEach((token, index) => { (token as { tokenIndex: number }).tokenIndex = index; });
+  return { tokens, diagnostics, tree };
 }
 
 function isComment(token: Token): boolean {
@@ -137,6 +141,16 @@ function startsClose(tokens: Token[]): boolean {
 function opensDefinitionParameters(tokens: Token[]): boolean {
   return tokens.at(-1)?.text === "("
     && tokens.some((token) => ["def", "action", "temporal", "nondet"].includes(token.text ?? ""));
+}
+
+function definitionMatchBodyIndex(tokens: Token[]): number | null {
+  if (!tokens.some((token) => ["val", "def", "action", "temporal", "nondet"].includes(token.text ?? ""))) return null;
+  const matchIndex = tokens.findIndex((token) => token.type === QuintLexer.MATCH);
+  return matchIndex > 0
+    && tokens[matchIndex - 1]?.text === "="
+    && braceDelta(tokens.slice(matchIndex)) > 0
+    ? matchIndex
+    : null;
 }
 
 function parenthesisDelta(tokens: Token[]): number {
@@ -233,6 +247,122 @@ function wrapLongDefinitionHeaders(
     index += replacement.length - 1;
   }
   return { lines: wrapped, barriers: wrappedBarriers };
+}
+
+type CallWrap = { line: number; lines: string[]; depth: number };
+
+function visitContexts(context: ParserRuleContext, visit: (context: ParserRuleContext) => void): void {
+  visit(context);
+  for (let index = 0; index < context.childCount; index += 1) {
+    const child = context.getChild(index);
+    if (child instanceof ParserRuleContext) visitContexts(child, visit);
+  }
+}
+
+function ancestors(context: ParserRuleContext): ParserRuleContext[] {
+  const result: ParserRuleContext[] = [];
+  for (let parent = context.parent; parent; parent = parent.parent) {
+    if (parent instanceof ParserRuleContext) result.push(parent);
+  }
+  return result;
+}
+
+function defaultTokens(tokens: Token[], start: number, stop: number): Token[] {
+  return tokens.slice(start, stop + 1).filter((token) => token.channel === Token.DEFAULT_CHANNEL);
+}
+
+function lastLine(token: Token): number {
+  return token.line + ((token.text ?? "").match(/\n/g)?.length ?? 0);
+}
+
+function callDepth(context: ParserRuleContext): number {
+  return ancestors(context).filter((parent) => parent instanceof OperAppContext || parent instanceof DotCallContext).length;
+}
+
+function multilineMatchCase(context: ParserRuleContext): boolean {
+  const parents = ancestors(context);
+  const matchCase = parents.find((parent) => parent instanceof MatchSumCaseContext);
+  const match = parents.find((parent) => parent instanceof MatchContext);
+  return Boolean(matchCase && match && matchCase.start.line !== matchCase.stop?.line && match.start.line !== match.stop?.line);
+}
+
+function callWrapForContext(
+  context: OperAppContext | DotCallContext,
+  tokens: Token[],
+  sourceLines: string[],
+  indentWidth: number,
+  maximumLength: number,
+): CallWrap | null {
+  const argList = context.argList();
+  if (!argList || !multilineMatchCase(context)) return null;
+  const arguments_ = argList.expr();
+  if (arguments_.length < 2 || context.start.line !== context.stop?.line) return null;
+  const line = context.start.line - 1;
+  if (sourceLines[line]!.length <= maximumLength) return null;
+  const lineStart = tokens.findIndex((token) => token.line === context.start.line && token.channel === Token.DEFAULT_CHANNEL);
+  const lineEnd = tokens.map((token, index) => ({ token, index })).filter(({ token }) => token.line === context.start.line && token.channel === Token.DEFAULT_CHANNEL).at(-1)?.index;
+  if (lineStart < 0 || lineEnd === undefined) return null;
+  const stop = context.stop!.tokenIndex;
+  const lineTokens = tokens.slice(lineStart, lineEnd + 1);
+  if (tokens.some((token) => isComment(token) && token.line <= context.start.line && lastLine(token) >= context.start.line) || lineTokens.some((token) => token.type === QuintLexer.STRING)) return null;
+  const trailing = tokens.slice(stop + 1, lineEnd + 1).filter((token) => token.channel === Token.DEFAULT_CHANNEL);
+  if (trailing.some((token) => token.text !== ")" && token.text !== ",")) return null;
+  const open = context.LPAREN()?.symbol.tokenIndex ?? -1;
+  const close = context.RPAREN()?.symbol.tokenIndex ?? -1;
+  if (open < 0 || close < 0) return null;
+  const commas = arguments_.slice(0, -1).map((argument, index) => defaultTokens(tokens, argument.stop!.tokenIndex + 1, arguments_[index + 1]!.start.tokenIndex - 1));
+  if (commas.some((separator) => separator.length !== 1 || separator[0]?.text !== ",")) return null;
+  const afterLastArgument = defaultTokens(tokens, arguments_.at(-1)!.stop!.tokenIndex + 1, close - 1);
+  if (afterLastArgument.some((token) => token.text !== ",")) return null;
+  const indentation = sourceLines[line]!.match(/^\s*/)?.[0] ?? "";
+  const argumentIndentation = `${indentation}${" ".repeat(indentWidth)}`;
+  const openingColumn = tokens[open]!.charPositionInLine;
+  const closingColumn = tokens[close]!.charPositionInLine;
+  const rendered = [
+    sourceLines[line]!.slice(0, openingColumn + 1),
+    ...arguments_.map((argument, index) => `${argumentIndentation}${renderTokens(defaultTokens(tokens, argument.start.tokenIndex, argument.stop!.tokenIndex))}${index < arguments_.length - 1 || afterLastArgument.length ? "," : ""}`),
+    `${indentation}${sourceLines[line]!.slice(closingColumn)}`,
+  ];
+  if (rendered.some((value) => value.length > maximumLength)) return null;
+  return { line, lines: rendered, depth: callDepth(context) };
+}
+
+function wrapOversizedMatchCalls(
+  lines: string[],
+  barriers: boolean[],
+  indentWidth: number,
+  maximumLength: number,
+): { lines: string[]; barriers: boolean[]; changed: boolean } {
+  const source = `${lines.join("\n")}\n`;
+  const parsed = parse(source);
+  if (parsed.diagnostics.length) return { lines, barriers, changed: false };
+  const candidates: CallWrap[] = [];
+  visitContexts(parsed.tree, (context) => {
+    if (context instanceof OperAppContext || context instanceof DotCallContext) {
+      const candidate = callWrapForContext(context, parsed.tokens, lines, indentWidth, maximumLength);
+      if (candidate) candidates.push(candidate);
+    }
+  });
+  const selected = new Map<number, CallWrap>();
+  for (const candidate of candidates) {
+    const current = selected.get(candidate.line);
+    if (!current || candidate.depth > current.depth) selected.set(candidate.line, candidate);
+  }
+  const wrappedLines: string[] = [];
+  const wrappedBarriers: boolean[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const selectedWrap = selected.get(index);
+    if (!selectedWrap) {
+      wrappedLines.push(lines[index]!);
+      wrappedBarriers.push(barriers[index] ?? false);
+      continue;
+    }
+    selectedWrap.lines.forEach((line, replacementIndex) => {
+      wrappedLines.push(line);
+      wrappedBarriers.push(replacementIndex === 0 ? (barriers[index] ?? false) : true);
+    });
+  }
+  return { lines: wrappedLines, barriers: wrappedBarriers, changed: selected.size > 0 };
 }
 
 function containsStringLiteral(line: string): boolean {
@@ -609,6 +739,10 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
     let depth = 0;
     let continuation = false;
     let definitionParameterDepth = 0;
+    let callContinuationDepth = 0;
+    const matchBodyBraceDepths: number[] = [];
+    let pendingMatchBody = false;
+    let pendingMatchArmBody = false;
     const updateDefinitionParameterDepth = (tokens: Token[]) => {
       if (definitionParameterDepth > 0) {
         definitionParameterDepth = Math.max(0, definitionParameterDepth + parenthesisDelta(tokens));
@@ -616,12 +750,51 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
         definitionParameterDepth = 1;
       }
     };
+    const updateCallContinuationDepth = (tokens: Token[]) => {
+      if (callContinuationDepth > 0) {
+        callContinuationDepth = Math.max(0, callContinuationDepth + parenthesisDelta(tokens));
+      } else if (!opensDefinitionParameters(tokens) && tokens.at(-1)?.text === "(") {
+        callContinuationDepth = 1;
+      }
+    };
+    const updateMatchBodyBraceDepth = (tokens: Token[], openedAt: number | null = null) => {
+      if (openedAt !== null) {
+        matchBodyBraceDepths.push(braceDelta(tokens.slice(openedAt)));
+      } else if (matchBodyBraceDepths.length) {
+        let delta = braceDelta(tokens);
+        while (delta !== 0 && matchBodyBraceDepths.length) {
+          const top = matchBodyBraceDepths.length - 1;
+          const next = matchBodyBraceDepths[top]! + delta;
+          if (next > 0) {
+            matchBodyBraceDepths[top] = next;
+            delta = 0;
+          } else {
+            matchBodyBraceDepths.pop();
+            delta = next;
+          }
+        }
+      }
+    };
+    const advanceBraceDepth = (tokens: Token[]) => {
+      if (startsClose(tokens)) depth = Math.max(0, depth - 1);
+      depth = Math.max(0, depth + braceDelta(tokens) + (startsClose(tokens) ? 1 : 0));
+    };
+    const advanceLayoutState = (tokens: Token[], openedAt: number | null = null) => {
+      if (!tokens.length) return;
+      updateDefinitionParameterDepth(tokens);
+      updateCallContinuationDepth(tokens);
+      updateMatchBodyBraceDepth(tokens, openedAt);
+      pendingMatchArmBody = tokens[0]?.text === "|" && tokens.at(-1)?.text === "=>";
+      pendingMatchBody = tokens.at(-1)?.text === "=";
+    };
     for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
       const line = lines[lineIndex]!;
+      const beginsPendingMatchBody = pendingMatchBody && line.tokens[0]?.type === QuintLexer.MATCH && braceDelta(line.tokens) > 0;
       if (line.verbatim) {
         rendered.push(line.source);
         barriers.push(true);
-        updateDefinitionParameterDepth(line.tokens);
+        advanceBraceDepth(line.tokens);
+        advanceLayoutState(line.tokens, beginsPendingMatchBody ? 0 : null);
         continue;
       }
       if (!line.tokens.length) {
@@ -630,36 +803,50 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
           ? `${" ".repeat(depth * settings.indentWidth)}${line.source.trimStart()}`
           : line.source.trimEnd());
         barriers.push(line.barrier || Boolean(line.source.trim()));
-        updateDefinitionParameterDepth(line.tokens);
+        advanceBraceDepth(line.tokens);
+        advanceLayoutState(line.tokens, beginsPendingMatchBody ? 0 : null);
         continue;
       }
       if (line.comments.some((comment) => comment.type === QuintLexer.COMMENT && (comment.text ?? "").includes("\n"))) {
         rendered.push(line.source.trimEnd());
         barriers.push(true);
-        updateDefinitionParameterDepth(line.tokens);
+        advanceBraceDepth(line.tokens);
+        advanceLayoutState(line.tokens, beginsPendingMatchBody ? 0 : null);
         continue;
       }
       if (line.tokens[0]?.type === QuintLexer.HASHBANG_LINE) {
         rendered.push(line.source);
         barriers.push(true);
-        updateDefinitionParameterDepth(line.tokens);
+        advanceBraceDepth(line.tokens);
+        advanceLayoutState(line.tokens, beginsPendingMatchBody ? 0 : null);
         continue;
       }
       if (line.tokens.length === 1 && line.tokens[0]?.type === QuintLexer.DOCCOMMENT) {
         rendered.push(line.source);
         barriers.push(true);
-        updateDefinitionParameterDepth(line.tokens);
+        advanceBraceDepth(line.tokens);
+        advanceLayoutState(line.tokens, beginsPendingMatchBody ? 0 : null);
         continue;
       }
       if (startsClose(line.tokens)) depth = Math.max(0, depth - 1);
       const closesParameters = definitionParameterDepth > 0 && line.tokens[0]?.text === ")";
-      const indentation = depth + ((continuation && !startsClose(line.tokens)) || (definitionParameterDepth > 0 && !closesParameters) ? 1 : 0);
-      let value = `${" ".repeat(indentation * settings.indentWidth)}${renderTokens(line.tokens)}`;
-      if (line.comments.length) value += `  ${line.comments.map(splitComment).join(" ")}`;
-      rendered.push(line.comments.length ? value : value.trimEnd());
-      barriers.push(line.barrier);
+      const closesCall = callContinuationDepth > 0 && line.tokens[0]?.text === ")";
+      const beginsNestedMatchBody = beginsPendingMatchBody && matchBodyBraceDepths.length > 0;
+      const indentation = depth + matchBodyBraceDepths.length + (beginsNestedMatchBody ? 1 : 0) + (pendingMatchArmBody ? 1 : 0) + ((continuation && !startsClose(line.tokens)) || (definitionParameterDepth > 0 && !closesParameters) || (callContinuationDepth > 0 && !closesCall) ? 1 : 0);
+      const matchBodyIndex = line.comments.length ? null : definitionMatchBodyIndex(line.tokens);
+      if (matchBodyIndex !== null) {
+        rendered.push(`${" ".repeat(indentation * settings.indentWidth)}${renderTokens(line.tokens.slice(0, matchBodyIndex))}`.trimEnd());
+        barriers.push(false);
+        rendered.push(`${" ".repeat((indentation + 1) * settings.indentWidth)}${renderTokens(line.tokens.slice(matchBodyIndex))}`);
+        barriers.push(line.barrier);
+      } else {
+        let value = `${" ".repeat(indentation * settings.indentWidth)}${renderTokens(line.tokens)}`;
+        if (line.comments.length) value += `  ${line.comments.map(splitComment).join(" ")}`;
+        rendered.push(line.comments.length ? value : value.trimEnd());
+        barriers.push(line.barrier);
+      }
       depth = Math.max(0, depth + braceDelta(line.tokens) + (startsClose(line.tokens) ? 1 : 0));
-      updateDefinitionParameterDepth(line.tokens);
+      advanceLayoutState(line.tokens, matchBodyIndex ?? (beginsPendingMatchBody ? 0 : null));
       const nextFirstToken = lines[lineIndex + 1]?.tokens[0]?.text;
       continuation = line.tokens.at(-1)?.text === "="
         || (continuation && (nextFirstToken === "and" || nextFirstToken === "or"));
@@ -682,20 +869,37 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
       settings.indentWidth,
       settings.alignment === "local" ? settings.clauseAlignment : "off",
     );
-    const aligned = settings.alignment === "local"
-      ? alignIslands(
-        expandedBooleanChains.lines,
-        expandedBooleanChains.barriers,
-        settings.maxAlignmentPadding,
-        settings.recordMaxAlignmentPadding,
-        settings.declarationAlignment,
-        settings.recordAlignment,
-        settings.clauseAlignment,
-      )
-      : expandedBooleanChains.lines;
-    const fullChains = settings.alignment === "local" && settings.clauseAlignment === "full"
-      ? alignFullBooleanChains(aligned, expandedBooleanChains.barriers)
-      : aligned;
+    const alignLayout = (layout: { lines: string[]; barriers: boolean[] }): { lines: string[]; barriers: boolean[] } => {
+      const aligned = settings.alignment === "local"
+        ? alignIslands(
+          layout.lines,
+          layout.barriers,
+          settings.maxAlignmentPadding,
+          settings.recordMaxAlignmentPadding,
+          settings.declarationAlignment,
+          settings.recordAlignment,
+          settings.clauseAlignment,
+        )
+        : layout.lines;
+      return {
+        lines: settings.alignment === "local" && settings.clauseAlignment === "full"
+          ? alignFullBooleanChains(aligned, layout.barriers)
+          : aligned,
+        barriers: layout.barriers,
+      };
+    };
+    let layout = { lines: expandedBooleanChains.lines, barriers: expandedBooleanChains.barriers };
+    for (let pass = 0; pass < 4; pass += 1) {
+      const wrappedCalls = wrapOversizedMatchCalls(
+        layout.lines,
+        layout.barriers,
+        settings.indentWidth,
+        settings.maxLineLength,
+      );
+      layout = alignLayout(wrappedCalls);
+      if (pass > 0 && !wrappedCalls.changed) break;
+    }
+    const fullChains = layout.lines;
     const spaced = settings.definitionSpacing === "nontrivial"
       ? separateNontrivialDefinitions(fullChains)
       : fullChains;

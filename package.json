@@ -1,6 +1,6 @@
 {
   "name": "quintfmt",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A conservative, comment-preserving formatter for Quint.",
   "license": "MIT",
   "keywords": ["quint", "formatter", "formal-methods", "model-checking"],

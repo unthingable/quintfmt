@@ -116,7 +116,8 @@ validation fails.
 - Formatting is idempotent.
 - Invalid source produces diagnostics and no partial output.
 
-The formatter wraps supported long definition parameter lists at the configured
+The formatter wraps supported long definition parameter lists and comment-free
+multi-argument calls in multiline match arms at the configured
 `maxLineLength` (100 by default); it does not yet split arbitrary expressions.
 It does not sort imports or declarations, reflow comments, or provide range/LSP
 formatting. Multiline block comments are preserved verbatim and act as layout
