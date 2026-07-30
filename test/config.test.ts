@@ -5,6 +5,7 @@ import { ConfigError, parseConfig } from "../src/config.js";
 test("parses supported .quintfmt.conf options", () => {
   assert.deepEqual(parseConfig(`
     indentWidth = 4
+    maxLineLength = 88
     alignment {
       mode = local
     }
@@ -18,6 +19,7 @@ test("parses supported .quintfmt.conf options", () => {
     lineEnding = crlf
   `), {
     indentWidth: 4,
+    maxLineLength: 88,
     alignment: "local",
     declarationAlignment: "columns",
     maxAlignmentPadding: 8,
@@ -33,6 +35,7 @@ test("parses supported .quintfmt.conf options", () => {
 test("rejects unknown and invalid .quintfmt.conf options", () => {
   assert.throws(() => parseConfig("declarations.spacing = groups"), ConfigError);
   assert.throws(() => parseConfig("alignment.maxPadding = 0"), ConfigError);
+  assert.throws(() => parseConfig("maxLineLength = 0"), ConfigError);
   assert.throws(() => parseConfig("alignment.recordMaxPadding = 0"), ConfigError);
   assert.throws(() => parseConfig("definitions.spacing = groups"), ConfigError);
   assert.throws(() => parseConfig("blankLines.policy = many"), ConfigError);

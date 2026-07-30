@@ -4,6 +4,7 @@ import { QuintParser } from "./generated/vendor/quint/QuintParser.js";
 
 export interface FormatOptions {
   indentWidth?: number;
+  maxLineLength?: number;
   maxAlignmentPadding?: number;
   recordMaxAlignmentPadding?: number | "unlimited";
   alignment?: "local" | "off";
@@ -28,6 +29,7 @@ export type FormatResult =
 
 const defaultOptions: Required<FormatOptions> = {
   indentWidth: 2,
+  maxLineLength: 100,
   maxAlignmentPadding: 16,
   recordMaxAlignmentPadding: "unlimited",
   alignment: "local",
@@ -132,8 +134,105 @@ function startsClose(tokens: Token[]): boolean {
   return tokens[0]?.text === "}";
 }
 
+function opensDefinitionParameters(tokens: Token[]): boolean {
+  return tokens.at(-1)?.text === "("
+    && tokens.some((token) => ["def", "action", "temporal", "nondet"].includes(token.text ?? ""));
+}
+
+function parenthesisDelta(tokens: Token[]): number {
+  return tokens.reduce((depth, token) => depth + (token.text === "(" ? 1 : token.text === ")" ? -1 : 0), 0);
+}
+
 function splitComment(comment: Token): string {
   return (comment.text ?? "").replace(/\r?\n$/, "");
+}
+
+function splitTopLevelCommaSeparated(source: string): string[] | null {
+  const parts: string[] = [];
+  let start = 0;
+  let depth = 0;
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index]!;
+    if (character === "(" || character === "[" || character === "{") depth += 1;
+    else if (character === ")" || character === "]" || character === "}") {
+      depth -= 1;
+      if (depth < 0) return null;
+    } else if (character === "," && depth === 0) {
+      const part = source.slice(start, index).trim();
+      if (!part) return null;
+      parts.push(part);
+      start = index + 1;
+    }
+  }
+  if (depth !== 0) return null;
+  const finalPart = source.slice(start).trim();
+  if (!finalPart) return null;
+  parts.push(finalPart);
+  return parts;
+}
+
+function parseDefinitionHeader(line: string): { base: string; name: string; parameters: string; suffix: string; body: string } | null {
+  const opening = /^(\s*)((?:pure\s+)?(?:def|action|temporal|nondet)\s+[A-Za-z_][\w:]*)\(/.exec(line);
+  if (!opening) return null;
+  const parameterStart = opening[0].length - 1;
+  let depth = 0;
+  let parameterEnd = -1;
+  for (let index = parameterStart; index < line.length; index += 1) {
+    if (line[index] === "(") depth += 1;
+    else if (line[index] === ")" && --depth === 0) {
+      parameterEnd = index;
+      break;
+    }
+  }
+  if (parameterEnd < 0) return null;
+  const remainder = line.slice(parameterEnd + 1);
+  depth = 0;
+  for (let index = 0; index < remainder.length; index += 1) {
+    const character = remainder[index]!;
+    if (character === "(" || character === "[" || character === "{") depth += 1;
+    else if (character === ")" || character === "]" || character === "}") depth -= 1;
+    else if (character === "=" && depth === 0 && remainder[index + 1] !== ">" && !["!", "<", ">", "="].includes(remainder[index - 1] ?? "")) {
+      return {
+        base: opening[1]!,
+        name: opening[2]!,
+        parameters: line.slice(parameterStart + 1, parameterEnd),
+        suffix: remainder.slice(0, index + 1),
+        body: remainder.slice(index + 1),
+      };
+    }
+  }
+  return null;
+}
+
+function wrapLongDefinitionHeaders(
+  lines: string[],
+  barriers: boolean[],
+  indentWidth: number,
+  maximumLength: number,
+): { lines: string[]; barriers: boolean[] } {
+  const wrapped = [...lines];
+  const wrappedBarriers = [...barriers];
+  for (let index = 0; index < wrapped.length; index += 1) {
+    const line = wrapped[index]!;
+    if (line.length <= maximumLength || wrappedBarriers[index] || containsStringLiteral(line)) continue;
+    const header = parseDefinitionHeader(line);
+    if (!header) continue;
+    const parameters = splitTopLevelCommaSeparated(header.parameters);
+    if (!parameters || parameters.length < 2) continue;
+    const base = header.base;
+    const parameterIndentation = `${base}${" ".repeat(indentWidth)}`;
+    const replacement = [
+      `${base}${header.name}(`,
+      ...parameters.map((parameter, parameterIndex) => `${parameterIndentation}${parameter}${parameterIndex < parameters.length - 1 ? "," : ""}`),
+      `${base})${header.suffix.trimEnd()}`,
+    ];
+    const body = header.body.trim();
+    if (body) replacement.push(`${parameterIndentation}${body}`);
+    wrapped.splice(index, 1, ...replacement);
+    wrappedBarriers.splice(index, 1, ...replacement.map(() => false));
+    index += replacement.length - 1;
+  }
+  return { lines: wrapped, barriers: wrappedBarriers };
 }
 
 function containsStringLiteral(line: string): boolean {
@@ -284,13 +383,27 @@ function expandBooleanDefinitionChains(
   const expandedBarriers = [...barriers];
   for (let index = 0; index + 1 < expanded.length; index += 1) {
     if (expandedBarriers[index] || expandedBarriers[index + 1]) continue;
-    if (!/^\s*(?:pure\s+)?(?:val|def)\b/.test(expanded[index]!)) continue;
+    const definition = /^\s*(?:pure\s+)?(?:val|def)\b/.test(expanded[index]!);
+    const matchArm = /^\s*\|.*=>\s*$/.test(expanded[index]!);
+    const fullChainHeader = clauseAlignment === "full"
+      && /=\s*$/.test(expanded[index]!)
+      && index + 2 < expanded.length
+      && !expandedBarriers[index + 2]
+      && /^\s*(?!and\b|or\b).+?\s*(==|!=|<=|>=|<|>)\s*.+$/.test(expanded[index + 1]!)
+      && /^\s*(?:and|or)\b/.test(expanded[index + 2]!);
+    if (!definition && !(clauseAlignment === "full" && matchArm) && !fullChainHeader) continue;
     const inline = /^\s*(?:and|or)\b/.test(expanded[index + 1]!);
-    const expandedChain = /=\s*$/.test(expanded[index]!)
+    const expandedChain = definition
+      && /=\s*$/.test(expanded[index]!)
       && index + 2 < expanded.length
       && !expandedBarriers[index + 2]
       && /^\s*(?:and|or)\b/.test(expanded[index + 2]!);
-    if (!inline && !expandedChain) continue;
+    const matchArmChain = matchArm
+      && index + 2 < expanded.length
+      && !expandedBarriers[index + 2]
+      && /^\s*(?!and\b|or\b).+?\s*(==|!=|<=|>=|<|>)\s*.+$/.test(expanded[index + 1]!)
+      && /^\s*(?:and|or)\b/.test(expanded[index + 2]!);
+    if (!inline && !expandedChain && !fullChainHeader && !matchArmChain) continue;
     const match = inline ? /^(\s*.*?\s=)\s+(.+)$/.exec(expanded[index]!) : null;
     if (inline && !match) continue;
     const header = match?.[1] ?? expanded[index]!;
@@ -314,16 +427,16 @@ function expandBooleanDefinitionChains(
   return { lines: expanded, barriers: expandedBarriers };
 }
 
-function alignFullBooleanChains(lines: string[], barriers: boolean[], maximumPadding: number): string[] {
+function alignFullBooleanChains(lines: string[], barriers: boolean[]): string[] {
   const output = [...lines];
-  for (let start = 0; start + 2 < output.length; start += 1) {
-    if (barriers[start] || !/=\s*$/.test(output[start]!)) continue;
-    const first = /^(\s*)(.+?)\s*(==|!=|<=|>=|<|>)\s*(.+)$/.exec(output[start + 1]!);
-    if (!first || barriers[start + 1] || containsStringLiteral(output[start + 1]!)) continue;
+  for (let start = 0; start + 1 < output.length; start += 1) {
+    const first = /^(\s*)(.+?)\s*(==|!=|<=|>=|<|>)\s*(.+)$/.exec(output[start]!);
+    if (!first || barriers[start] || containsStringLiteral(output[start]!) || output[start]!.includes("=>")) continue;
     const rows: Array<{ index: number; indent: string; connector: string; left: string; operator: string; right: string }> = [
-      { index: start + 1, indent: first[1]!, connector: "", left: first[2]!, operator: first[3]!, right: first[4]! },
+      { index: start, indent: first[1]!, connector: "", left: first[2]!, operator: first[3]!, right: first[4]! },
     ];
-    for (let index = start + 2; index < output.length && !barriers[index]; index += 1) {
+    for (let index = start + 1; index < output.length && !barriers[index]; index += 1) {
+      if (output[index]!.includes("=>")) break;
       const row = /^(\s*)(and|or)\s+(.+?)\s*(==|!=|<=|>=|<|>)\s*(.+)$/.exec(output[index]!);
       if (!row || containsStringLiteral(output[index]!)) break;
       rows.push({ index, indent: row[1]!, connector: `${row[2]!.padEnd("and".length)} `, left: row[3]!, operator: row[4]!, right: row[5]! });
@@ -331,7 +444,6 @@ function alignFullBooleanChains(lines: string[], barriers: boolean[], maximumPad
     if (rows.length < 2) continue;
     const widths = rows.map((row) => row.indent.length + row.connector.length + row.left.length);
     const target = Math.max(...widths);
-    if (widths.some((width) => target - width > maximumPadding)) continue;
     for (const row of rows) {
       const padding = target - row.indent.length - row.connector.length - row.left.length;
       output[row.index] = `${row.indent}${row.connector}${row.left}${" ".repeat(padding)} ${row.operator} ${row.right}`;
@@ -496,11 +608,20 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
     const barriers: boolean[] = [];
     let depth = 0;
     let continuation = false;
+    let definitionParameterDepth = 0;
+    const updateDefinitionParameterDepth = (tokens: Token[]) => {
+      if (definitionParameterDepth > 0) {
+        definitionParameterDepth = Math.max(0, definitionParameterDepth + parenthesisDelta(tokens));
+      } else if (opensDefinitionParameters(tokens)) {
+        definitionParameterDepth = 1;
+      }
+    };
     for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
       const line = lines[lineIndex]!;
       if (line.verbatim) {
         rendered.push(line.source);
         barriers.push(true);
+        updateDefinitionParameterDepth(line.tokens);
         continue;
       }
       if (!line.tokens.length) {
@@ -509,38 +630,50 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
           ? `${" ".repeat(depth * settings.indentWidth)}${line.source.trimStart()}`
           : line.source.trimEnd());
         barriers.push(line.barrier || Boolean(line.source.trim()));
+        updateDefinitionParameterDepth(line.tokens);
         continue;
       }
       if (line.comments.some((comment) => comment.type === QuintLexer.COMMENT && (comment.text ?? "").includes("\n"))) {
         rendered.push(line.source.trimEnd());
         barriers.push(true);
+        updateDefinitionParameterDepth(line.tokens);
         continue;
       }
       if (line.tokens[0]?.type === QuintLexer.HASHBANG_LINE) {
         rendered.push(line.source);
         barriers.push(true);
+        updateDefinitionParameterDepth(line.tokens);
         continue;
       }
       if (line.tokens.length === 1 && line.tokens[0]?.type === QuintLexer.DOCCOMMENT) {
         rendered.push(line.source);
         barriers.push(true);
+        updateDefinitionParameterDepth(line.tokens);
         continue;
       }
       if (startsClose(line.tokens)) depth = Math.max(0, depth - 1);
-      const indentation = depth + (continuation && !startsClose(line.tokens) ? 1 : 0);
+      const closesParameters = definitionParameterDepth > 0 && line.tokens[0]?.text === ")";
+      const indentation = depth + ((continuation && !startsClose(line.tokens)) || (definitionParameterDepth > 0 && !closesParameters) ? 1 : 0);
       let value = `${" ".repeat(indentation * settings.indentWidth)}${renderTokens(line.tokens)}`;
       if (line.comments.length) value += `  ${line.comments.map(splitComment).join(" ")}`;
       rendered.push(line.comments.length ? value : value.trimEnd());
       barriers.push(line.barrier);
       depth = Math.max(0, depth + braceDelta(line.tokens) + (startsClose(line.tokens) ? 1 : 0));
+      updateDefinitionParameterDepth(line.tokens);
       const nextFirstToken = lines[lineIndex + 1]?.tokens[0]?.text;
       continuation = line.tokens.at(-1)?.text === "="
         || (continuation && (nextFirstToken === "and" || nextFirstToken === "or"));
     }
     const compactedBraces = compactSingletonBraces(rendered, barriers);
-    const normalizedTrailingChains = normalizeTrailingBooleanChains(
+    const wrappedHeaders = wrapLongDefinitionHeaders(
       compactedBraces.lines,
       compactedBraces.barriers,
+      settings.indentWidth,
+      settings.maxLineLength,
+    );
+    const normalizedTrailingChains = normalizeTrailingBooleanChains(
+      wrappedHeaders.lines,
+      wrappedHeaders.barriers,
       settings.indentWidth,
     );
     const expandedBooleanChains = expandBooleanDefinitionChains(
@@ -561,7 +694,7 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
       )
       : expandedBooleanChains.lines;
     const fullChains = settings.alignment === "local" && settings.clauseAlignment === "full"
-      ? alignFullBooleanChains(aligned, expandedBooleanChains.barriers, settings.maxAlignmentPadding)
+      ? alignFullBooleanChains(aligned, expandedBooleanChains.barriers)
       : aligned;
     const spaced = settings.definitionSpacing === "nontrivial"
       ? separateNontrivialDefinitions(fullChains)

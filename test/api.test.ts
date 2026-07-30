@@ -255,6 +255,88 @@ test("full clause alignment normalizes trailing connectors and aligns or operand
   assert.match(globallyOff.formatted, /\n    alpha == 1\n    or betaLong == 2/);
 });
 
+test("full clause alignment hangs match-arm connectors while aligning operands", () => {
+  const source = `module Demo {\n  val Check = match storeRow {\n    | CommittedForDispatch(committed) =>\n      committed.contract == expected\n      and committed.capability == expectedCapability\n      and committed.receipt == expectedReceipt\n    | _ => true\n  }\n}\n`;
+  const result = format(source, { clauseAlignment: "full" });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /CommittedForDispatch\(committed\) =>\n        committed\.contract/);
+  assert.match(result.formatted, /\n    and committed\.capability/);
+  const lines = result.formatted.split("\n");
+  assert.equal(lines[3]!.indexOf("=="), lines[4]!.indexOf("=="));
+  assert.equal(lines[4]!.indexOf("=="), lines[5]!.indexOf("=="));
+  assert.deepEqual(format(result.formatted, { clauseAlignment: "full" }), result);
+});
+
+test("full clause alignment leaves a single match-arm comparison at its normal indentation", () => {
+  const source = `module Demo {\n  val Check = match value {\n    | Some(v) =>\n      v == expected\n    | _ => false\n  }\n}\n`;
+  const result = format(source, { clauseAlignment: "full" });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /Some\(v\) =>\n    v == expected/);
+  assert.deepEqual(format(result.formatted, { clauseAlignment: "full" }), result);
+});
+
+test("full clause alignment includes the head after a multiline definition header", () => {
+  const source = `module Demo {\n  pure def canAcceptAtE1(\n    committed: CommittedStage,\n    request: Request,\n  ): bool =\n    request.capability == committed.capability\n    and request.capability.stageId == committed.stageId\n    and request.capability.contractDigest == committed.contractDigest\n}\n`;
+  const result = format(source, { clauseAlignment: "full" });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /\): bool =\n      request\.capability/);
+  assert.match(result.formatted, /\n  and request\.capability\.stageId/);
+  const lines = result.formatted.split("\n");
+  assert.equal(lines[5]!.indexOf("=="), lines[6]!.indexOf("=="));
+  assert.equal(lines[6]!.indexOf("=="), lines[7]!.indexOf("=="));
+  assert.deepEqual(format(result.formatted, { clauseAlignment: "full" }), result);
+});
+
+test("wraps a long definition parameter list at maxLineLength", () => {
+  const source = `module Demo {\n  pure def canAcceptAtE1(committed: CommittedStage, request: DispatchRequest, actuator: ActuatorState, now: int): bool = request.capability == committed.capability\n}\n`;
+  const result = format(source, { maxLineLength: 80 });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /pure def canAcceptAtE1\(\n    committed: CommittedStage,/);
+  assert.match(result.formatted, /    now:\s+int\n  \): bool =\n    request\.capability/);
+  assert.deepEqual(format(result.formatted, { maxLineLength: 80 }), result);
+});
+
+test("wraps headers with operator and parenthesized return types without mistaking them for bodies", () => {
+  const source = `module Demo {\n  pure def choose(firstParameter: int, secondParameter: int): int => bool = firstParameter == secondParameter\n  pure def wrap(firstParameter: int, secondParameter: int): (int => bool) = choose\n}\n`;
+  const result = format(source, { maxLineLength: 60 });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /\): int => bool =\n    firstParameter == secondParameter/);
+  assert.match(result.formatted, /\): \(int => bool\) =\n    choose/);
+  assert.deepEqual(format(result.formatted, { maxLineLength: 60 }), result);
+});
+
+test("keeps multiline definition parameter state local across comments and later definitions", () => {
+  const source = `module Demo {\n  pure def f(\n    first: int,\n    second: int\n  ): int = /* explanation\n  */ first + second\n  val after = 1\n}\n`;
+  const result = format(source);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /\*\/ first \+ second\n  val after = 1\n}/);
+  assert.deepEqual(format(result.formatted), result);
+});
+
+test("indents a final parameter that shares its line with the closing parenthesis", () => {
+  const source = `module Demo {\n  pure def f(\n    first: int,\n    second: int): int = first + second\n  val after = 1\n}\n`;
+  const result = format(source);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /\n    second: int\): int = first \+ second\n\n  val after = 1/);
+  assert.deepEqual(format(result.formatted), result);
+});
+
+test("full clause alignment preserves lambda arrows in Boolean clauses", () => {
+  const source = `module Demo {\n  pure def canAccept(actuator: ActuatorState, request: Request): bool =\n    request.capability == Accepted\n    and request.stageId == CurrentStage\n    and not(actuator.acceptances.exists(acceptance => acceptance.capabilityId == request.capability.id))\n}\n`;
+  const result = format(source, { clauseAlignment: "full" });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /acceptances\.exists\(acceptance => acceptance\.capabilityId == request\.capability\.id\)/);
+  assert.deepEqual(format(result.formatted, { clauseAlignment: "full" }), result);
+});
+
 test("offers independent record and clause alignment controls", () => {
   const source = `module Demo {\n  type Record = {\n    x: str,\n    longer: str,\n  }\n  action step = all {\n    x' = 1,\n    longer' = 2,\n  }\n}\n`;
   const result = format(source, { recordAlignment: "off", clauseAlignment: "off" });

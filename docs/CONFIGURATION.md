@@ -21,6 +21,7 @@ invocation. Use `--config path/to/file` to select a file explicitly, or
 
 ```hocon
 indentWidth = 2
+maxLineLength = 100
 
 alignment {
   mode = local
@@ -56,6 +57,7 @@ The public API accepts these options:
 ```ts
 format(source, {
   indentWidth: 2,
+  maxLineLength: 100,
   alignment: "local",
   declarationAlignment: "types",
   maxAlignmentPadding: 16,
@@ -71,6 +73,7 @@ format(source, {
 | Option | Values | Default | Meaning |
 | --- | --- | --- | --- |
 | `indentWidth` | positive integer | `2` | Spaces used for block indentation. |
+| `maxLineLength` | positive integer | `100` | Target width for supported wrapping. Long definition parameter lists wrap one parameter per line. Indivisible tokens and expressions may exceed it. |
 | `alignment` | `local`, `off` | `local` | Enables or disables all local alignment. |
 | `declarationAlignment` | `types`, `columns`, `off` | `types` | Controls alignment within consecutive `const`/`var` groups. |
 | `recordAlignment` | `local`, `off` | `local` | Controls local alignment of record fields and values. |
@@ -85,6 +88,7 @@ The CLI currently exposes declaration alignment:
 
 ```sh
 quintfmt --declaration-alignment types Spec.qnt
+quintfmt --max-line-length 100 Spec.qnt
 quintfmt --declaration-alignment columns Spec.qnt
 quintfmt --declaration-alignment off Spec.qnt
 quintfmt --definition-spacing compact Spec.qnt
@@ -125,10 +129,11 @@ var phase: Phase
 ```
 
 Alignment is local. It never crosses a blank line, comment, different
-indentation level, or nested layout. Declaration and clause rows split at the
-configured generic padding cap. Records default to unlimited alignment; with a
-finite record cap, long labels extend right while the remaining fields retain a
-shared value column.
+indentation level, or nested layout. Declaration and `operator` clause rows
+split at the configured generic padding cap. `full` aligns an entire compatible
+Boolean chain, including its head. Records default to unlimited alignment; with
+a finite record cap, long labels extend right while the remaining fields retain
+a shared value column.
 
 ## Clause alignment
 

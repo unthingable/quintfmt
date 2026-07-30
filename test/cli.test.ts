@@ -65,6 +65,8 @@ test("reports help and the package version", () => {
   const version = spawnSync(process.execPath, [cli, "--version"], { encoding: "utf8" });
   assert.equal(help.status, 0);
   assert.match(help.stdout, /Named files are formatted in place by default/);
+  assert.match(help.stdout, /--max-line-length <columns>/);
+  assert.doesNotMatch(help.stdout, /\\n/);
   assert.equal(version.status, 0);
   assert.match(version.stdout, /^0\.1\.0\n$/);
 });

@@ -5,7 +5,7 @@ import type { FormatOptions } from "./api.js";
 export class ConfigError extends Error {}
 
 const configurationKeys = new Set([
-  "indentWidth", "alignment.mode", "alignment.maxPadding", "alignment.records", "alignment.recordMaxPadding", "alignment.clauses",
+  "indentWidth", "maxLineLength", "alignment.mode", "alignment.maxPadding", "alignment.records", "alignment.recordMaxPadding", "alignment.clauses",
   "declarations.alignment", "definitions.spacing", "blankLines.policy", "lineEnding",
 ]);
 
@@ -47,6 +47,7 @@ export function parseConfig(source: string, label = ".quintfmt.conf"): FormatOpt
   for (const key of value.keys()) if (!configurationKeys.has(key)) throw new ConfigError(`${label}: unknown option ${key}`);
   const options: FormatOptions = {};
   if (value.has("indentWidth")) options.indentWidth = positiveInteger(Number(value.get("indentWidth")), "indentWidth");
+  if (value.has("maxLineLength")) options.maxLineLength = positiveInteger(Number(value.get("maxLineLength")), "maxLineLength");
   if (value.has("alignment.maxPadding")) options.maxAlignmentPadding = positiveInteger(Number(value.get("alignment.maxPadding")), "alignment.maxPadding");
   if (value.has("alignment.recordMaxPadding")) {
     const padding = value.get("alignment.recordMaxPadding");

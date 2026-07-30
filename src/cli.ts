@@ -12,6 +12,7 @@ function parseArguments(args: string[]): {
   check: boolean;
   help: boolean;
   version: boolean;
+  maxLineLength?: number;
   declarationAlignment?: "types" | "columns" | "off";
   definitionSpacing?: "nontrivial" | "compact";
   recordAlignment?: "local" | "off";
@@ -27,6 +28,7 @@ function parseArguments(args: string[]): {
   let check = false;
   let help = false;
   let version = false;
+  let maxLineLength: number | undefined;
   let declarationAlignment: "types" | "columns" | "off" | undefined;
   let definitionSpacing: "nontrivial" | "compact" | undefined;
   let recordAlignment: "local" | "off" | undefined;
@@ -45,6 +47,15 @@ function parseArguments(args: string[]): {
     else if (argument === "--stdout") stdout = true;
     else if (argument === "--check") check = true;
     else if (argument === "--no-config") useConfig = false;
+    else if (argument === "--max-line-length") {
+      const value = args[++index];
+      if (!value || !/^\d+$/.test(value) || Number(value) <= 0) throw new Error("--max-line-length must be a positive integer");
+      maxLineLength = Number(value);
+    } else if (argument.startsWith("--max-line-length=")) {
+      const value = argument.slice("--max-line-length=".length);
+      if (!/^\d+$/.test(value) || Number(value) <= 0) throw new Error("--max-line-length must be a positive integer");
+      maxLineLength = Number(value);
+    }
     else if (argument === "--config") {
       const value = args[++index];
       if (!value) throw new Error("--config needs a path");
@@ -114,7 +125,7 @@ function parseArguments(args: string[]): {
     } else if (argument.startsWith("-")) throw new Error(`unknown option: ${argument}`);
     else files.push(argument);
   }
-  return { files, write, stdout, check, help, version, declarationAlignment, definitionSpacing, recordAlignment, recordMaxAlignmentPadding, clauseAlignment, blankLinePolicy, lineEnding, configPath, useConfig };
+  return { files, write, stdout, check, help, version, maxLineLength, declarationAlignment, definitionSpacing, recordAlignment, recordMaxAlignmentPadding, clauseAlignment, blankLinePolicy, lineEnding, configPath, useConfig };
 }
 
 const helpText = `Usage: quintfmt [options] [files...]\n\nNamed files are formatted in place by default. With no files, source is read from stdin and written to stdout.\n\nOptions:\n  -h, --help                         Show this help\n  -v, --version                      Show the installed version\n  -w, --write                        Explicit alias for in-place formatting\n      --stdout                       Print formatted named files to stdout\n      --check                        Exit 1 when named files need formatting\n      --config <path>                Use a .quintfmt.conf file\n      --no-config                    Ignore configuration discovery\n      --declaration-alignment <mode> types, columns, or off\n      --definition-spacing <mode>    nontrivial or compact\n      --record-alignment <mode>      local or off\n      --record-max-padding <value>   positive integer or unlimited\n      --clause-alignment <mode>      off, operator, or full\n      --blank-lines <mode>           preserve or single\n      --line-ending <mode>           preserve, lf, or crlf\n`;
@@ -132,9 +143,12 @@ async function main(): Promise<void> {
     process.exitCode = 2;
     return;
   }
-  const { files, write, stdout, check, help, version, declarationAlignment, definitionSpacing, recordAlignment, recordMaxAlignmentPadding, clauseAlignment, blankLinePolicy, lineEnding, configPath, useConfig } = parsedArguments;
+  const { files, write, stdout, check, help, version, maxLineLength, declarationAlignment, definitionSpacing, recordAlignment, recordMaxAlignmentPadding, clauseAlignment, blankLinePolicy, lineEnding, configPath, useConfig } = parsedArguments;
   if (help) {
-    process.stdout.write(helpText);
+    process.stdout.write(helpText.replace(
+      "      --no-config                    Ignore configuration discovery",
+      "      --no-config                    Ignore configuration discovery\n      --max-line-length <columns>    Wrap supported long definition headers",
+    ));
     return;
   }
   if (version) {
@@ -147,6 +161,7 @@ async function main(): Promise<void> {
     const config = await loadConfig(configPath ?? discovered);
     options = {
       ...config,
+      ...(maxLineLength ? { maxLineLength } : {}),
       ...(declarationAlignment ? { declarationAlignment } : {}),
       ...(definitionSpacing ? { definitionSpacing } : {}),
       ...(recordAlignment ? { recordAlignment } : {}),
