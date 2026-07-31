@@ -48,7 +48,22 @@ type ConditionalFrame = {
   definitionBody: boolean;
   branches: Array<{ start: number; stop: number; suppliesContinuationIndent: boolean }>;
 };
-type FluentContinuationFrame = { triviaStart: number; dot: number; stop: number };
+type FluentChain = { rootStop: number; rootLine: number; start: number; stop: number; hang: number };
+type FluentSuffix = {
+  chain: number;
+  triviaStart: number;
+  dot: number;
+  stop: number;
+  openParen?: number;
+  closeParen?: number;
+};
+type LinePlan = {
+  line: Line;
+  tokens: Token[];
+  indentation: number;
+  kind: "verbatim" | "comment" | "blank" | "tokens";
+  matchBodyIndex: number | null;
+};
 
 function parse(source: string): { tokens: Token[]; diagnostics: Diagnostic[]; tree: ReturnType<QuintParser["modules"]> } {
   const lexer = new QuintLexer(CharStreams.fromString(source));
@@ -289,8 +304,10 @@ function previousDefaultToken(tokens: Token[], index: number): Token | null {
   return null;
 }
 
-function fluentContinuationFrames(tree: ParserRuleContext, tokens: Token[]): FluentContinuationFrame[] {
-  const frames: FluentContinuationFrame[] = [];
+function fluentContinuations(tree: ParserRuleContext, tokens: Token[]): { chains: FluentChain[]; suffixes: FluentSuffix[] } {
+  const chains: FluentChain[] = [];
+  const suffixes: FluentSuffix[] = [];
+  const chainIndexes = new Map<string, number>();
   visitContexts(tree, (context) => {
     if (!(context instanceof DotCallContext)) return;
     const receiver = context.expr();
@@ -299,21 +316,78 @@ function fluentContinuationFrames(tree: ParserRuleContext, tokens: Token[]): Flu
     const dot = tokens.slice(receiver.stop!.tokenIndex + 1, name.start.tokenIndex)
       .find((token) => token.channel === Token.DEFAULT_CHANNEL && token.text === ".");
     if (!dot || dot.line <= receiver.stop!.line) return;
-    frames.push({ triviaStart: receiver.stop!.tokenIndex + 1, dot: dot.tokenIndex, stop: context.stop!.tokenIndex });
+    let root: ParserRuleContext = receiver;
+    while (root instanceof DotCallContext) root = root.expr();
+    if (!root.stop) return;
+    const key = `${root.start.tokenIndex}:${root.stop.tokenIndex}`;
+    let chain = chainIndexes.get(key);
+    if (chain === undefined) {
+      chain = chains.length;
+      chainIndexes.set(key, chain);
+      chains.push({
+        rootStop: root.stop.tokenIndex,
+        rootLine: root.stop.line,
+        start: root.start.tokenIndex,
+        stop: context.stop!.tokenIndex,
+        hang: 0,
+      });
+    } else {
+      chains[chain]!.stop = Math.max(chains[chain]!.stop, context.stop!.tokenIndex);
+    }
+    suffixes.push({
+      chain,
+      triviaStart: receiver.stop!.tokenIndex + 1,
+      dot: dot.tokenIndex,
+      stop: context.stop!.tokenIndex,
+      openParen: context.LPAREN()?.symbol.tokenIndex,
+      closeParen: context.RPAREN()?.symbol.tokenIndex,
+    });
   });
-  return frames;
+  return { chains, suffixes };
 }
 
-function fluentContinuationFloor(tokens: Token[], frames: FluentContinuationFrame[], structuralBase: number): number {
-  const first = tokens[0]?.tokenIndex;
-  if (first === undefined) return 0;
-  const defaultTokens = tokens.filter((token) => token.channel === Token.DEFAULT_CHANNEL);
-  const active = defaultTokens.length
-    ? frames.some((frame) => defaultTokens.some((token) => token.tokenIndex >= frame.dot && token.tokenIndex <= frame.stop))
-    : frames.some((frame) => first >= frame.triviaStart && first <= frame.stop);
-  return active
-    ? structuralBase + 1
-    : 0;
+function indexInside(index: number, start: number, stop: number): boolean {
+  return index >= start && index <= stop;
+}
+
+function suffixTargetAt(index: number, suffixes: FluentSuffix[], chains: FluentChain[]): number {
+  let target = 0;
+  for (const suffix of suffixes) {
+    if (!indexInside(index, suffix.dot, suffix.stop)) continue;
+    const chainHang = chains[suffix.chain]!.hang;
+    target = Math.max(target, suffix.openParen !== undefined
+      && suffix.closeParen !== undefined
+      && index > suffix.openParen
+      && index < suffix.closeParen
+      ? chainHang + 1
+      : chainHang);
+  }
+  return target;
+}
+
+function fluentIndentation(plan: LinePlan, suffixes: FluentSuffix[], chains: FluentChain[]): number {
+  const tokens = plan.tokens.filter((token) => token.channel === Token.DEFAULT_CHANNEL);
+  if (tokens.length) {
+    const first = tokens[0]!.tokenIndex;
+    const target = suffixes.reduce((maximum, suffix) => Math.max(
+      maximum,
+      indexInside(first, suffix.dot, suffix.stop)
+        ? suffixTargetAt(first, [suffix], chains)
+        : 0,
+    ), 0);
+    return Math.max(plan.indentation, target);
+  }
+  const first = plan.tokens[0]?.tokenIndex;
+  if (first === undefined) return plan.indentation;
+  let target = 0;
+  for (const suffix of suffixes) {
+    if (indexInside(first, suffix.triviaStart, suffix.dot - 1)) {
+      target = Math.max(target, chains[suffix.chain]!.hang);
+    } else if (indexInside(first, suffix.dot, suffix.stop)) {
+      target = Math.max(target, suffixTargetAt(first, [suffix], chains));
+    }
+  }
+  return Math.max(plan.indentation, target);
 }
 
 function conditionalFrames(tree: ParserRuleContext, tokens: Token[]): ConditionalFrame[] {
@@ -864,9 +938,8 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
     if (parsed.diagnostics.length) return { ok: false, formatted: null, diagnostics: parsed.diagnostics };
     const lines = makeLines(source, parsed.tokens);
     const conditionals = conditionalFrames(parsed.tree, parsed.tokens);
-    const fluentContinuations = fluentContinuationFrames(parsed.tree, parsed.tokens);
-    const rendered: string[] = [];
-    const barriers: boolean[] = [];
+    const fluent = fluentContinuations(parsed.tree, parsed.tokens);
+    const plans: LinePlan[] = [];
     let depth = 0;
     let continuation = false;
     let definitionParameterDepth = 0;
@@ -944,74 +1017,94 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
       const conditionalLayout = conditionalIndentation(layoutTokens, conditionals);
       const beginsPendingMatchBody = pendingMatchBody && line.tokens[0]?.type === QuintLexer.MATCH && braceDelta(line.tokens) > 0;
       const beginsContinuationBlock = continuation && !beginsPendingMatchBody && !conditionalLayout.definitionStart && braceDelta(line.tokens) > 0;
+      const lineDepth = startsClose(line.tokens) ? Math.max(0, depth - 1) : depth;
+      const closesParameters = definitionParameterDepth > 0 && line.tokens[0]?.text === ")";
+      const closesCall = callContinuationDepth > 0 && line.tokens[0]?.text === ")";
+      const beginsNestedMatchBody = beginsPendingMatchBody && matchBodyBraceDepths.length > 0;
+      const structuralBase = lineDepth + matchBodyBraceDepths.length + continuationBlockBraceDepths.length;
+      const normalIndentation = structuralBase + conditionalLayout.depth + (beginsNestedMatchBody ? 1 : 0) + (pendingMatchArmBody ? 1 : 0) + (((continuation && !conditionalLayout.definitionStart && !conditionalLayout.branchIndent) && !startsClose(line.tokens)) || (definitionParameterDepth > 0 && !closesParameters) || (callContinuationDepth > 0 && !closesCall) ? 1 : 0);
       if (line.verbatim) {
-        rendered.push(line.source);
-        barriers.push(true);
+        plans.push({ line, tokens: layoutTokens, indentation: normalIndentation, kind: "verbatim", matchBodyIndex: null });
         advanceBraceDepth(line.tokens);
         advanceLayoutState(line.tokens, beginsPendingMatchBody ? 0 : null, beginsContinuationBlock ? 0 : null);
         continue;
       }
       if (!line.tokens.length) {
         const multilineComment = line.comments.some((comment) => comment.type === QuintLexer.COMMENT && (comment.text ?? "").includes("\n"));
-        const commentFluentFloor = fluentContinuationFloor(
-          layoutTokens,
-          fluentContinuations,
-          depth + matchBodyBraceDepths.length + continuationBlockBraceDepths.length,
-        );
-        const commentIndentation = Math.max(depth + conditionalLayout.depth, commentFluentFloor);
-        rendered.push(line.comments.length && !multilineComment
-          ? `${" ".repeat(commentIndentation * settings.indentWidth)}${line.source.trimStart()}`
-          : line.source.trimEnd());
-        barriers.push(line.barrier || Boolean(line.source.trim()));
+        plans.push({
+          line,
+          tokens: layoutTokens,
+          indentation: depth + conditionalLayout.depth,
+          kind: multilineComment ? "verbatim" : line.comments.length ? "comment" : "blank",
+          matchBodyIndex: null,
+        });
         advanceBraceDepth(line.tokens);
         advanceLayoutState(line.tokens, beginsPendingMatchBody ? 0 : null, beginsContinuationBlock ? 0 : null);
         continue;
       }
       if (line.comments.some((comment) => comment.type === QuintLexer.COMMENT && (comment.text ?? "").includes("\n"))) {
-        rendered.push(line.source.trimEnd());
-        barriers.push(true);
+        plans.push({ line, tokens: layoutTokens, indentation: 0, kind: "verbatim", matchBodyIndex: null });
         advanceBraceDepth(line.tokens);
         advanceLayoutState(line.tokens, beginsPendingMatchBody ? 0 : null, beginsContinuationBlock ? 0 : null);
         continue;
       }
       if (line.tokens[0]?.type === QuintLexer.HASHBANG_LINE) {
-        rendered.push(line.source);
-        barriers.push(true);
+        plans.push({ line, tokens: layoutTokens, indentation: 0, kind: "verbatim", matchBodyIndex: null });
         advanceBraceDepth(line.tokens);
         advanceLayoutState(line.tokens, beginsPendingMatchBody ? 0 : null, beginsContinuationBlock ? 0 : null);
         continue;
       }
       if (line.tokens.length === 1 && line.tokens[0]?.type === QuintLexer.DOCCOMMENT) {
-        rendered.push(line.source);
-        barriers.push(true);
+        plans.push({ line, tokens: layoutTokens, indentation: 0, kind: "verbatim", matchBodyIndex: null });
         advanceBraceDepth(line.tokens);
         advanceLayoutState(line.tokens, beginsPendingMatchBody ? 0 : null, beginsContinuationBlock ? 0 : null);
         continue;
       }
-      if (startsClose(line.tokens)) depth = Math.max(0, depth - 1);
-      const closesParameters = definitionParameterDepth > 0 && line.tokens[0]?.text === ")";
-      const closesCall = callContinuationDepth > 0 && line.tokens[0]?.text === ")";
-      const beginsNestedMatchBody = beginsPendingMatchBody && matchBodyBraceDepths.length > 0;
-      const structuralBase = depth + matchBodyBraceDepths.length + continuationBlockBraceDepths.length;
-      const normalIndentation = structuralBase + conditionalLayout.depth + (beginsNestedMatchBody ? 1 : 0) + (pendingMatchArmBody ? 1 : 0) + (((continuation && !conditionalLayout.definitionStart && !conditionalLayout.branchIndent) && !startsClose(line.tokens)) || (definitionParameterDepth > 0 && !closesParameters) || (callContinuationDepth > 0 && !closesCall) ? 1 : 0);
-      const indentation = Math.max(normalIndentation, fluentContinuationFloor(line.tokens, fluentContinuations, structuralBase));
+      depth = lineDepth;
       const matchBodyIndex = line.comments.length ? null : definitionMatchBodyIndex(line.tokens);
-      if (matchBodyIndex !== null) {
-        rendered.push(`${" ".repeat(indentation * settings.indentWidth)}${renderTokens(line.tokens.slice(0, matchBodyIndex))}`.trimEnd());
-        barriers.push(false);
-        rendered.push(`${" ".repeat((indentation + 1) * settings.indentWidth)}${renderTokens(line.tokens.slice(matchBodyIndex))}`);
-        barriers.push(line.barrier);
-      } else {
-        let value = `${" ".repeat(indentation * settings.indentWidth)}${renderTokens(line.tokens)}`;
-        if (line.comments.length) value += `  ${line.comments.map(splitComment).join(" ")}`;
-        rendered.push(line.comments.length ? value : value.trimEnd());
-        barriers.push(line.barrier);
-      }
+      plans.push({ line, tokens: line.tokens, indentation: normalIndentation, kind: "tokens", matchBodyIndex });
       depth = Math.max(0, depth + braceDelta(line.tokens) + (startsClose(line.tokens) ? 1 : 0));
       advanceLayoutState(line.tokens, matchBodyIndex ?? (beginsPendingMatchBody ? 0 : null), beginsContinuationBlock ? 0 : null);
       const nextFirstToken = lines[lineIndex + 1]?.tokens[0]?.text;
       continuation = line.tokens.at(-1)?.text === "="
         || (continuation && (nextFirstToken === "and" || nextFirstToken === "or"));
+    }
+    for (const chain of [...fluent.chains].sort((left, right) => (right.stop - right.start) - (left.stop - left.start))) {
+      const rootPlan = plans.find((plan) => plan.tokens.some((token) => token.tokenIndex === chain.rootStop));
+      const rootIndentation = rootPlan ? fluentIndentation(rootPlan, fluent.suffixes, fluent.chains) : 0;
+      chain.hang = rootIndentation + 1;
+    }
+    const rendered: string[] = [];
+    const barriers: boolean[] = [];
+    for (const plan of plans) {
+      const { line } = plan;
+      if (plan.kind === "verbatim") {
+        rendered.push(line.source);
+        barriers.push(true);
+        continue;
+      }
+      if (plan.kind === "blank") {
+        rendered.push(line.source.trimEnd());
+        barriers.push(line.barrier || Boolean(line.source.trim()));
+        continue;
+      }
+      const indentation = fluentIndentation(plan, fluent.suffixes, fluent.chains);
+      if (plan.kind === "comment") {
+        rendered.push(`${" ".repeat(indentation * settings.indentWidth)}${line.source.trimStart()}`);
+        barriers.push(line.barrier || Boolean(line.source.trim()));
+        continue;
+      }
+      if (plan.matchBodyIndex !== null) {
+        rendered.push(`${" ".repeat(indentation * settings.indentWidth)}${renderTokens(line.tokens.slice(0, plan.matchBodyIndex))}`.trimEnd());
+        barriers.push(false);
+        rendered.push(`${" ".repeat((indentation + 1) * settings.indentWidth)}${renderTokens(line.tokens.slice(plan.matchBodyIndex))}`);
+        barriers.push(line.barrier);
+        continue;
+      }
+      let value = `${" ".repeat(indentation * settings.indentWidth)}${renderTokens(line.tokens)}`;
+      if (line.comments.length) value += `  ${line.comments.map(splitComment).join(" ")}`;
+      rendered.push(line.comments.length ? value : value.trimEnd());
+      barriers.push(line.barrier);
     }
     const compactedBraces = compactSingletonBraces(rendered, barriers);
     const wrappedHeaders = wrapLongDefinitionHeaders(

@@ -259,16 +259,16 @@ test("lays out multiline Boolean definition chains beneath their header", () => 
   assert.deepEqual(format(result.formatted), result);
 });
 
-test("keeps CST-defined fluent suffixes at their expression-body indentation", () => {
+test("hangs multiline fluent suffixes beneath their receiver", () => {
   const source = `module Demo {\n  run c1MismatchCreatesEarlyN0Test =\n    init\n    // admitted request\n    .then(admitAndStage)\n    .then(claim(webhookWorker))\n    .then(\n      nested\n      .observeOwnership(webhookWorker)\n    )\n    .then(done)\n  val after = 0\n}\n`;
   const result = format(source);
   assert.equal(result.ok, true);
   if (!result.ok) return;
-  assert.match(result.formatted, /run c1MismatchCreatesEarlyN0Test =\n    init\n    \/\/ admitted request\n    \.then\(admitAndStage\)\n    \.then\(claim\(webhookWorker\)\)\n    \.then\(\n    nested\n    \.observeOwnership\(webhookWorker\)\n    \)\n    \.then\(done\)\n  val after = 0/);
+  assert.match(result.formatted, /run c1MismatchCreatesEarlyN0Test =\n    init\n      \/\/ admitted request\n      \.then\(admitAndStage\)\n      \.then\(claim\(webhookWorker\)\)\n      \.then\(\n        nested\n          \.observeOwnership\(webhookWorker\)\n      \)\n      \.then\(done\)\n  val after = 0/);
   assert.deepEqual(format(result.formatted), result);
 });
 
-test("applies fluent continuation floors to every operator qualifier", () => {
+test("hangs multiline fluent suffixes for every operator qualifier", () => {
   const declarations = [
     "val value =",
     "pure val pureValue =",
@@ -283,23 +283,54 @@ test("applies fluent continuation floors to every operator qualifier", () => {
   const result = format(source);
   assert.equal(result.ok, true);
   if (!result.ok) return;
-  assert.equal((result.formatted.match(/^    \.then\(/gm) ?? []).length, declarations.length * 2);
+  assert.equal((result.formatted.match(/^      \.then\(/gm) ?? []).length, declarations.length * 2);
   assert.deepEqual(format(result.formatted), result);
 });
 
-test("keeps suffix floors when a fluent call shares its line with a parent expression", () => {
+test("keeps fluent suffix targets through parent-expression tails", () => {
   const inline = `module Demo {\n  run scenario = init\n  .then(first) + 1\n}\n`;
   const closing = `module Demo {\n  run scenario =\n    init\n    .then(\n      first\n    ) + 1\n}\n`;
   for (const source of [inline, closing]) {
     const result = format(source);
     assert.equal(result.ok, true);
     if (!result.ok) continue;
-    assert.match(result.formatted, /\n    \.then/);
+    assert.match(result.formatted, /\n(?:    |      )\.then/);
     assert.deepEqual(format(result.formatted), result);
   }
   const closingResult = format(closing);
   if (!closingResult.ok) return;
-  assert.match(closingResult.formatted, /\.then\(\n    first\n    \) \+ 1/);
+  assert.match(closingResult.formatted, /\.then\(\n        first\n      \) \+ 1/);
+});
+
+test("keeps fluent chain targets inside conditional and match bodies", () => {
+  const conditional = `module Demo {\n  val result = if (ready) {\n    init\n    .then(\n      first\n    )\n    .then(done)\n  } else {\n    fallback\n  }\n}\n`;
+  const match = `module Demo {\n  val result = match value {\n    | Ready => init\n    .then(\n      first\n    )\n    .then(done)\n    | _ => fallback\n  }\n}\n`;
+  for (const source of [conditional, match]) {
+    const result = format(source);
+    assert.equal(result.ok, true);
+    if (!result.ok) continue;
+    assert.match(result.formatted, /init\n\s+\.then\(\n\s+first\n\s+\)\n\s+\.then\(done\)/);
+    assert.deepEqual(format(result.formatted), result);
+  }
+});
+
+test("keeps fluent-chain comments at their owning suffix level", () => {
+  const source = `module Demo {\n  run scenario =\n    init\n    // before suffix\n    .then(\n      // inside arguments\n      first\n      // before close\n    )\n    // between suffixes\n    .then(done)\n  val after = 0\n}\n`;
+  const result = format(source);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /    init\n      \/\/ before suffix\n      \.then\(\n        \/\/ inside arguments\n        first\n        \/\/ before close\n      \)\n      \/\/ between suffixes\n      \.then\(done\)\n  val after/);
+  assert.deepEqual(format(result.formatted), result);
+});
+
+test("uses verbatim fluent receivers as layout anchors without rewriting them", () => {
+  const source = `module Demo {\n  run scenario = /* keep */ init\n  .then(first)\n  run nested =\n    init\n    .then(\n      /* keep */ inner\n      .then(second)\n    )\n}\n`;
+  const result = format(source);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /run scenario = \/\* keep \*\/ init\n    \.then\(first\)/);
+  assert.match(result.formatted, /\/\* keep \*\/ inner\n          \.then\(second\)/);
+  assert.deepEqual(format(result.formatted), result);
 });
 
 test("keeps a multiline conditional expression inside its definition body", () => {
