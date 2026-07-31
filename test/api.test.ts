@@ -259,6 +259,49 @@ test("lays out multiline Boolean definition chains beneath their header", () => 
   assert.deepEqual(format(result.formatted), result);
 });
 
+test("keeps CST-defined fluent suffixes at their expression-body indentation", () => {
+  const source = `module Demo {\n  run c1MismatchCreatesEarlyN0Test =\n    init\n    // admitted request\n    .then(admitAndStage)\n    .then(claim(webhookWorker))\n    .then(\n      nested\n      .observeOwnership(webhookWorker)\n    )\n    .then(done)\n  val after = 0\n}\n`;
+  const result = format(source);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /run c1MismatchCreatesEarlyN0Test =\n    init\n    \/\/ admitted request\n    \.then\(admitAndStage\)\n    \.then\(claim\(webhookWorker\)\)\n    \.then\(\n    nested\n    \.observeOwnership\(webhookWorker\)\n    \)\n    \.then\(done\)\n  val after = 0/);
+  assert.deepEqual(format(result.formatted), result);
+});
+
+test("applies fluent continuation floors to every operator qualifier", () => {
+  const declarations = [
+    "val value =",
+    "pure val pureValue =",
+    "def function =",
+    "pure def pureFunction =",
+    "action transition =",
+    "run scenario =",
+    "temporal property =",
+    "nondet choice =",
+  ];
+  const source = `module Demo {\n${declarations.map((declaration) => `  ${declaration}\n    init\n    .then(first)\n    .then(second)`).join("\n")}\n}\n`;
+  const result = format(source);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal((result.formatted.match(/^    \.then\(/gm) ?? []).length, declarations.length * 2);
+  assert.deepEqual(format(result.formatted), result);
+});
+
+test("keeps suffix floors when a fluent call shares its line with a parent expression", () => {
+  const inline = `module Demo {\n  run scenario = init\n  .then(first) + 1\n}\n`;
+  const closing = `module Demo {\n  run scenario =\n    init\n    .then(\n      first\n    ) + 1\n}\n`;
+  for (const source of [inline, closing]) {
+    const result = format(source);
+    assert.equal(result.ok, true);
+    if (!result.ok) continue;
+    assert.match(result.formatted, /\n    \.then/);
+    assert.deepEqual(format(result.formatted), result);
+  }
+  const closingResult = format(closing);
+  if (!closingResult.ok) return;
+  assert.match(closingResult.formatted, /\.then\(\n    first\n    \) \+ 1/);
+});
+
 test("keeps a multiline conditional expression inside its definition body", () => {
   const source = `module Demo {\n  pure def contractDigestFor(dispatch: int): str =\n    if (dispatch == 0) {\n      Contract("approved")\n    } else {\n      Contract("changed")\n    }\n}\n`;
   const result = format(source);

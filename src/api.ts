@@ -48,6 +48,7 @@ type ConditionalFrame = {
   definitionBody: boolean;
   branches: Array<{ start: number; stop: number; suppliesContinuationIndent: boolean }>;
 };
+type FluentContinuationFrame = { triviaStart: number; dot: number; stop: number };
 
 function parse(source: string): { tokens: Token[]; diagnostics: Diagnostic[]; tree: ReturnType<QuintParser["modules"]> } {
   const lexer = new QuintLexer(CharStreams.fromString(source));
@@ -286,6 +287,33 @@ function previousDefaultToken(tokens: Token[], index: number): Token | null {
     if (tokens[current]?.channel === Token.DEFAULT_CHANNEL) return tokens[current]!;
   }
   return null;
+}
+
+function fluentContinuationFrames(tree: ParserRuleContext, tokens: Token[]): FluentContinuationFrame[] {
+  const frames: FluentContinuationFrame[] = [];
+  visitContexts(tree, (context) => {
+    if (!(context instanceof DotCallContext)) return;
+    const receiver = context.expr();
+    if (!receiver.stop) return;
+    const name = context.nameAfterDot();
+    const dot = tokens.slice(receiver.stop!.tokenIndex + 1, name.start.tokenIndex)
+      .find((token) => token.channel === Token.DEFAULT_CHANNEL && token.text === ".");
+    if (!dot || dot.line <= receiver.stop!.line) return;
+    frames.push({ triviaStart: receiver.stop!.tokenIndex + 1, dot: dot.tokenIndex, stop: context.stop!.tokenIndex });
+  });
+  return frames;
+}
+
+function fluentContinuationFloor(tokens: Token[], frames: FluentContinuationFrame[], structuralBase: number): number {
+  const first = tokens[0]?.tokenIndex;
+  if (first === undefined) return 0;
+  const defaultTokens = tokens.filter((token) => token.channel === Token.DEFAULT_CHANNEL);
+  const active = defaultTokens.length
+    ? frames.some((frame) => defaultTokens.some((token) => token.tokenIndex >= frame.dot && token.tokenIndex <= frame.stop))
+    : frames.some((frame) => first >= frame.triviaStart && first <= frame.stop);
+  return active
+    ? structuralBase + 1
+    : 0;
 }
 
 function conditionalFrames(tree: ParserRuleContext, tokens: Token[]): ConditionalFrame[] {
@@ -836,6 +864,7 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
     if (parsed.diagnostics.length) return { ok: false, formatted: null, diagnostics: parsed.diagnostics };
     const lines = makeLines(source, parsed.tokens);
     const conditionals = conditionalFrames(parsed.tree, parsed.tokens);
+    const fluentContinuations = fluentContinuationFrames(parsed.tree, parsed.tokens);
     const rendered: string[] = [];
     const barriers: boolean[] = [];
     let depth = 0;
@@ -924,8 +953,14 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
       }
       if (!line.tokens.length) {
         const multilineComment = line.comments.some((comment) => comment.type === QuintLexer.COMMENT && (comment.text ?? "").includes("\n"));
+        const commentFluentFloor = fluentContinuationFloor(
+          layoutTokens,
+          fluentContinuations,
+          depth + matchBodyBraceDepths.length + continuationBlockBraceDepths.length,
+        );
+        const commentIndentation = Math.max(depth + conditionalLayout.depth, commentFluentFloor);
         rendered.push(line.comments.length && !multilineComment
-          ? `${" ".repeat((depth + conditionalLayout.depth) * settings.indentWidth)}${line.source.trimStart()}`
+          ? `${" ".repeat(commentIndentation * settings.indentWidth)}${line.source.trimStart()}`
           : line.source.trimEnd());
         barriers.push(line.barrier || Boolean(line.source.trim()));
         advanceBraceDepth(line.tokens);
@@ -957,7 +992,9 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
       const closesParameters = definitionParameterDepth > 0 && line.tokens[0]?.text === ")";
       const closesCall = callContinuationDepth > 0 && line.tokens[0]?.text === ")";
       const beginsNestedMatchBody = beginsPendingMatchBody && matchBodyBraceDepths.length > 0;
-      const indentation = depth + matchBodyBraceDepths.length + continuationBlockBraceDepths.length + conditionalLayout.depth + (beginsNestedMatchBody ? 1 : 0) + (pendingMatchArmBody ? 1 : 0) + (((continuation && !conditionalLayout.definitionStart && !conditionalLayout.branchIndent) && !startsClose(line.tokens)) || (definitionParameterDepth > 0 && !closesParameters) || (callContinuationDepth > 0 && !closesCall) ? 1 : 0);
+      const structuralBase = depth + matchBodyBraceDepths.length + continuationBlockBraceDepths.length;
+      const normalIndentation = structuralBase + conditionalLayout.depth + (beginsNestedMatchBody ? 1 : 0) + (pendingMatchArmBody ? 1 : 0) + (((continuation && !conditionalLayout.definitionStart && !conditionalLayout.branchIndent) && !startsClose(line.tokens)) || (definitionParameterDepth > 0 && !closesParameters) || (callContinuationDepth > 0 && !closesCall) ? 1 : 0);
+      const indentation = Math.max(normalIndentation, fluentContinuationFloor(line.tokens, fluentContinuations, structuralBase));
       const matchBodyIndex = line.comments.length ? null : definitionMatchBodyIndex(line.tokens);
       if (matchBodyIndex !== null) {
         rendered.push(`${" ".repeat(indentation * settings.indentWidth)}${renderTokens(line.tokens.slice(0, matchBodyIndex))}`.trimEnd());
