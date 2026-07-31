@@ -134,6 +134,16 @@ test("formats Quint type definitions and match expressions", () => {
   assert.deepEqual(format(result.formatted), result);
 });
 
+test("indents multiline sum-type variants with or without a leading first bar", () => {
+  const source = `module Demo {\n  type Store =\n  NoStage\n  | Staged(int)\n  // terminal state\n  | Terminated\n  type Effect =\n  | None\n  | Sent\n}\n`;
+  const result = format(source);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /type Store =\n    NoStage\n    \| Staged\(int\)\n    \/\/ terminal state\n    \| Terminated/);
+  assert.match(result.formatted, /type Effect =\n    \| None\n    \| Sent/);
+  assert.deepEqual(format(result.formatted), result);
+});
+
 test("breaks a definition before a match body regardless of line width", () => {
   const source = `module Demo {\n  action choose(worker: Worker): bool = match state.workers.get(worker) {\n    | Ready => true\n    | _ => false\n  }\n}\n`;
   const result = format(source, { maxLineLength: 200 });

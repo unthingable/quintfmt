@@ -1,6 +1,6 @@
 import { CharStreams, CommonTokenStream, ParserRuleContext, Token } from "antlr4ts";
 import { QuintLexer } from "./generated/vendor/quint/QuintLexer.js";
-import { DotCallContext, IfElseContext, MatchContext, MatchSumCaseContext, OperAppContext, QuintParser } from "./generated/vendor/quint/QuintParser.js";
+import { DotCallContext, IfElseContext, MatchContext, MatchSumCaseContext, OperAppContext, QuintParser, TypeSumDefContext } from "./generated/vendor/quint/QuintParser.js";
 
 export interface FormatOptions {
   indentWidth?: number;
@@ -57,6 +57,7 @@ type FluentSuffix = {
   openParen?: number;
   closeParen?: number;
 };
+type SumTypeFrame = { header: number; headerLine: number; stop: number; indentation: number };
 type LinePlan = {
   line: Line;
   tokens: Token[];
@@ -346,6 +347,16 @@ function fluentContinuations(tree: ParserRuleContext, tokens: Token[]): { chains
   return { chains, suffixes };
 }
 
+function sumTypeFrames(tree: ParserRuleContext): SumTypeFrame[] {
+  const frames: SumTypeFrame[] = [];
+  visitContexts(tree, (context) => {
+    if (!(context instanceof TypeSumDefContext) || context.start.line === context.stop?.line) return;
+    const header = context.ASGN().symbol;
+    frames.push({ header: header.tokenIndex, headerLine: header.line, stop: context.stop!.tokenIndex, indentation: 0 });
+  });
+  return frames;
+}
+
 function indexInside(index: number, start: number, stop: number): boolean {
   return index >= start && index <= stop;
 }
@@ -387,6 +398,18 @@ function fluentIndentation(plan: LinePlan, suffixes: FluentSuffix[], chains: Flu
       target = Math.max(target, suffixTargetAt(first, [suffix], chains));
     }
   }
+  return Math.max(plan.indentation, target);
+}
+
+function sumTypeIndentation(plan: LinePlan, frames: SumTypeFrame[]): number {
+  const first = plan.tokens[0];
+  if (!first) return plan.indentation;
+  const target = frames.reduce((maximum, frame) => Math.max(
+    maximum,
+    first.line > frame.headerLine && indexInside(first.tokenIndex, frame.header + 1, frame.stop)
+      ? frame.indentation
+      : 0,
+  ), 0);
   return Math.max(plan.indentation, target);
 }
 
@@ -939,6 +962,7 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
     const lines = makeLines(source, parsed.tokens);
     const conditionals = conditionalFrames(parsed.tree, parsed.tokens);
     const fluent = fluentContinuations(parsed.tree, parsed.tokens);
+    const sumTypes = sumTypeFrames(parsed.tree);
     const plans: LinePlan[] = [];
     let depth = 0;
     let continuation = false;
@@ -1074,6 +1098,10 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
       const rootIndentation = rootPlan ? fluentIndentation(rootPlan, fluent.suffixes, fluent.chains) : 0;
       chain.hang = rootIndentation + 1;
     }
+    for (const frame of sumTypes) {
+      const headerPlan = plans.find((plan) => plan.tokens.some((token) => token.tokenIndex === frame.header));
+      frame.indentation = (headerPlan?.indentation ?? 0) + 1;
+    }
     const rendered: string[] = [];
     const barriers: boolean[] = [];
     for (const plan of plans) {
@@ -1088,7 +1116,10 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
         barriers.push(line.barrier || Boolean(line.source.trim()));
         continue;
       }
-      const indentation = fluentIndentation(plan, fluent.suffixes, fluent.chains);
+      const indentation = sumTypeIndentation(
+        { ...plan, indentation: fluentIndentation(plan, fluent.suffixes, fluent.chains) },
+        sumTypes,
+      );
       if (plan.kind === "comment") {
         rendered.push(`${" ".repeat(indentation * settings.indentWidth)}${line.source.trimStart()}`);
         barriers.push(line.barrier || Boolean(line.source.trim()));
