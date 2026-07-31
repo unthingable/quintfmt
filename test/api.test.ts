@@ -146,25 +146,25 @@ test("indents multiline sum-type variants with or without a leading first bar", 
 
 test("full sum-type alignment gives an optional leading bar a ghost column", () => {
   const source = `module Demo {\n  type Store =\n  NoStage\n  | Staged(int)\n}\n`;
-  const full = format(source, { sumTypeAlignment: "full" });
-  const globallyOff = format(source, { alignment: "off", sumTypeAlignment: "full" });
+  const full = format(source, { clauseAlignment: "full" });
+  const globallyOff = format(source, { alignment: "off", clauseAlignment: "full" });
   assert.equal(full.ok, true);
   assert.equal(globallyOff.ok, true);
   if (!full.ok || !globallyOff.ok) return;
   assert.match(full.formatted, /type Store =\n      NoStage\n    \| Staged\(int\)/);
   assert.match(globallyOff.formatted, /type Store =\n    NoStage\n    \| Staged\(int\)/);
-  assert.deepEqual(format(full.formatted, { sumTypeAlignment: "full" }), full);
+  assert.deepEqual(format(full.formatted, { clauseAlignment: "full" }), full);
 });
 
 test("sum-type nesting composes with record bodies at every indent width", () => {
   const source = `module Demo {\n  type TerminalRecord =\n    EarlyN0({ admission: str })\n  | E1Resolved({\n    committed: str,\n    release: str,\n    outcome: str,\n  })\n}\n`;
   for (const indentWidth of [1, 2, 4]) {
-    const result = format(source, { indentWidth, sumTypeAlignment: "full" });
+    const result = format(source, { indentWidth, clauseAlignment: "full" });
     assert.equal(result.ok, true);
     if (!result.ok) continue;
     assert.match(result.formatted, new RegExp(`type TerminalRecord =\\n${" ".repeat(indentWidth * 2 + 2)}EarlyN0\\(\\{ admission: str \\}\\)\\n${" ".repeat(indentWidth * 2)}\\| E1Resolved\\(\\{\\n${" ".repeat(indentWidth * 3)}committed:`));
     assert.match(result.formatted, new RegExp(`\\n${" ".repeat(indentWidth * 2)}\\}\\)`));
-    assert.deepEqual(format(result.formatted, { indentWidth, sumTypeAlignment: "full" }), result);
+    assert.deepEqual(format(result.formatted, { indentWidth, clauseAlignment: "full" }), result);
   }
 });
 

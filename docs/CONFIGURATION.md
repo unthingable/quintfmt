@@ -29,7 +29,6 @@ alignment {
   records = local
   recordMaxPadding = unlimited
   clauses = operator
-  sums = indent
 }
 
 declarations {
@@ -66,7 +65,6 @@ format(source, {
   definitionSpacing: "nontrivial",
   recordAlignment: "local",
   clauseAlignment: "operator",
-  sumTypeAlignment: "indent",
   blankLinePolicy: "preserve",
   lineEnding: "preserve",
 })
@@ -80,8 +78,7 @@ format(source, {
 | `declarationAlignment` | `types`, `columns`, `off` | `types` | Controls alignment within consecutive `const`/`var` groups. |
 | `recordAlignment` | `local`, `off` | `local` | Controls local alignment of record fields and values. |
 | `recordMaxAlignmentPadding` | positive integer, `unlimited` | `unlimited` | Maximum record-field padding. With a finite cap, oversize labels extend right while the ordinary fields stay aligned. |
-| `clauseAlignment` | `off`, `operator`, `full` | `operator` | Controls layout and alignment of compatible action and Boolean clauses. |
-| `sumTypeAlignment` | `indent`, `full` | `indent` | Controls multiline sum types. `full` aligns labels after a real or optional leading `|`. |
+| `clauseAlignment` | `off`, `operator`, `full` | `operator` | Controls layout and alignment of compatible action and Boolean clauses. `full` also aligns an unbarred first multiline sum-type variant with its `|`-prefixed siblings. |
 | `maxAlignmentPadding` | positive integer | `16` | Maximum spaces added before a column. The formatter splits a local group rather than creating an excessive gap. |
 | `definitionSpacing` | `nontrivial`, `compact` | `nontrivial` | Adds one blank line after a comment-led, trailing-comment, or multiline module-level definition. |
 | `blankLinePolicy` | `preserve`, `single` | `preserve` | Preserves authored runs of blank lines, or normalizes each run to one line. |
@@ -98,7 +95,6 @@ quintfmt --definition-spacing compact Spec.qnt
 quintfmt --record-alignment off Spec.qnt
 quintfmt --record-max-padding unlimited Spec.qnt
 quintfmt --clause-alignment full Spec.qnt
-quintfmt --sum-type-alignment full Spec.qnt
 quintfmt --blank-lines single Spec.qnt
 quintfmt --line-ending lf Spec.qnt
 quintfmt --config .quintfmt.conf Spec.qnt

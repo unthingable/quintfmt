@@ -18,7 +18,6 @@ function parseArguments(args: string[]): {
   recordAlignment?: "local" | "off";
   recordMaxAlignmentPadding?: number | "unlimited";
   clauseAlignment?: "off" | "operator" | "full";
-  sumTypeAlignment?: "indent" | "full";
   blankLinePolicy?: "preserve" | "single";
   lineEnding?: "preserve" | "lf" | "crlf";
   configPath?: string;
@@ -35,7 +34,6 @@ function parseArguments(args: string[]): {
   let recordAlignment: "local" | "off" | undefined;
   let recordMaxAlignmentPadding: number | "unlimited" | undefined;
   let clauseAlignment: "off" | "operator" | "full" | undefined;
-  let sumTypeAlignment: "indent" | "full" | undefined;
   let blankLinePolicy: "preserve" | "single" | undefined;
   let lineEnding: "preserve" | "lf" | "crlf" | undefined;
   let configPath: string | undefined;
@@ -108,14 +106,6 @@ function parseArguments(args: string[]): {
       const value = argument.slice("--clause-alignment=".length);
       if (value !== "off" && value !== "operator" && value !== "full") throw new Error("--clause-alignment must be off, operator, or full");
       clauseAlignment = value;
-    } else if (argument === "--sum-type-alignment") {
-      const value = args[++index];
-      if (value !== "indent" && value !== "full") throw new Error("--sum-type-alignment must be indent or full");
-      sumTypeAlignment = value;
-    } else if (argument.startsWith("--sum-type-alignment=")) {
-      const value = argument.slice("--sum-type-alignment=".length);
-      if (value !== "indent" && value !== "full") throw new Error("--sum-type-alignment must be indent or full");
-      sumTypeAlignment = value;
     } else if (argument === "--blank-lines") {
       const value = args[++index];
       if (value !== "preserve" && value !== "single") throw new Error("--blank-lines must be preserve or single");
@@ -135,10 +125,10 @@ function parseArguments(args: string[]): {
     } else if (argument.startsWith("-")) throw new Error(`unknown option: ${argument}`);
     else files.push(argument);
   }
-  return { files, write, stdout, check, help, version, maxLineLength, declarationAlignment, definitionSpacing, recordAlignment, recordMaxAlignmentPadding, clauseAlignment, sumTypeAlignment, blankLinePolicy, lineEnding, configPath, useConfig };
+  return { files, write, stdout, check, help, version, maxLineLength, declarationAlignment, definitionSpacing, recordAlignment, recordMaxAlignmentPadding, clauseAlignment, blankLinePolicy, lineEnding, configPath, useConfig };
 }
 
-const helpText = `Usage: quintfmt [options] [files...]\n\nNamed files are formatted in place by default. With no files, source is read from stdin and written to stdout.\n\nOptions:\n  -h, --help                         Show this help\n  -v, --version                      Show the installed version\n  -w, --write                        Explicit alias for in-place formatting\n      --stdout                       Print formatted named files to stdout\n      --check                        Exit 1 when named files need formatting\n      --config <path>                Use a .quintfmt.conf file\n      --no-config                    Ignore configuration discovery\n      --declaration-alignment <mode> types, columns, or off\n      --definition-spacing <mode>    nontrivial or compact\n      --record-alignment <mode>      local or off\n      --record-max-padding <value>   positive integer or unlimited\n      --clause-alignment <mode>      off, operator, or full\n      --sum-type-alignment <mode>    indent or full\n      --blank-lines <mode>           preserve or single\n      --line-ending <mode>           preserve, lf, or crlf\n`;
+const helpText = `Usage: quintfmt [options] [files...]\n\nNamed files are formatted in place by default. With no files, source is read from stdin and written to stdout.\n\nOptions:\n  -h, --help                         Show this help\n  -v, --version                      Show the installed version\n  -w, --write                        Explicit alias for in-place formatting\n      --stdout                       Print formatted named files to stdout\n      --check                        Exit 1 when named files need formatting\n      --config <path>                Use a .quintfmt.conf file\n      --no-config                    Ignore configuration discovery\n      --declaration-alignment <mode> types, columns, or off\n      --definition-spacing <mode>    nontrivial or compact\n      --record-alignment <mode>      local or off\n      --record-max-padding <value>   positive integer or unlimited\n      --clause-alignment <mode>      off, operator, or full\n      --blank-lines <mode>           preserve or single\n      --line-ending <mode>           preserve, lf, or crlf\n`;
 
 function packageVersion(): string {
   return (JSON.parse(readFileSync(resolve(__dirname, "../../package.json"), "utf8")) as { version: string }).version;
@@ -153,7 +143,7 @@ async function main(): Promise<void> {
     process.exitCode = 2;
     return;
   }
-  const { files, write, stdout, check, help, version, maxLineLength, declarationAlignment, definitionSpacing, recordAlignment, recordMaxAlignmentPadding, clauseAlignment, sumTypeAlignment, blankLinePolicy, lineEnding, configPath, useConfig } = parsedArguments;
+  const { files, write, stdout, check, help, version, maxLineLength, declarationAlignment, definitionSpacing, recordAlignment, recordMaxAlignmentPadding, clauseAlignment, blankLinePolicy, lineEnding, configPath, useConfig } = parsedArguments;
   if (help) {
     process.stdout.write(helpText.replace(
       "      --no-config                    Ignore configuration discovery",
@@ -177,7 +167,6 @@ async function main(): Promise<void> {
       ...(recordAlignment ? { recordAlignment } : {}),
       ...(recordMaxAlignmentPadding ? { recordMaxAlignmentPadding } : {}),
       ...(clauseAlignment ? { clauseAlignment } : {}),
-      ...(sumTypeAlignment ? { sumTypeAlignment } : {}),
       ...(blankLinePolicy ? { blankLinePolicy } : {}),
       ...(lineEnding ? { lineEnding } : {}),
     };

@@ -5,7 +5,7 @@ import type { FormatOptions } from "./api.js";
 export class ConfigError extends Error {}
 
 const configurationKeys = new Set([
-  "indentWidth", "maxLineLength", "alignment.mode", "alignment.maxPadding", "alignment.records", "alignment.recordMaxPadding", "alignment.clauses", "alignment.sums",
+  "indentWidth", "maxLineLength", "alignment.mode", "alignment.maxPadding", "alignment.records", "alignment.recordMaxPadding", "alignment.clauses",
   "declarations.alignment", "definitions.spacing", "blankLines.policy", "lineEnding",
 ]);
 
@@ -71,11 +71,6 @@ export function parseConfig(source: string, label = ".quintfmt.conf"): FormatOpt
       throw new ConfigError("alignment.clauses must be off, operator, or full");
     }
     options.clauseAlignment = mode;
-  }
-  if (value.has("alignment.sums")) {
-    const mode = value.get("alignment.sums");
-    if (mode !== "indent" && mode !== "full") throw new ConfigError("alignment.sums must be indent or full");
-    options.sumTypeAlignment = mode;
   }
   if (value.has("declarations.alignment")) {
     const alignment = value.get("declarations.alignment");

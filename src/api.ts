@@ -11,7 +11,6 @@ export interface FormatOptions {
   declarationAlignment?: "types" | "columns" | "off";
   recordAlignment?: "local" | "off";
   clauseAlignment?: "off" | "operator" | "full";
-  sumTypeAlignment?: "indent" | "full";
   definitionSpacing?: "nontrivial" | "compact";
   blankLinePolicy?: "preserve" | "single";
   lineEnding?: "preserve" | "lf" | "crlf";
@@ -37,7 +36,6 @@ const defaultOptions: Required<FormatOptions> = {
   declarationAlignment: "types",
   recordAlignment: "local",
   clauseAlignment: "operator",
-  sumTypeAlignment: "indent",
   definitionSpacing: "nontrivial",
   blankLinePolicy: "preserve",
   lineEnding: "preserve",
@@ -426,7 +424,7 @@ function fluentIndentation(plan: LinePlan, suffixes: FluentSuffix[], chains: Flu
   return Math.max(plannedLevels(plan), target);
 }
 
-function applySumTypeLayout(plans: LinePlan[], frames: SumTypeFrame[], mode: Required<FormatOptions>["sumTypeAlignment"]): void {
+function applySumTypeLayout(plans: LinePlan[], frames: SumTypeFrame[], full: boolean): void {
   for (const plan of plans) {
     const first = plan.tokens[0];
     if (!first) continue;
@@ -434,7 +432,7 @@ function applySumTypeLayout(plans: LinePlan[], frames: SumTypeFrame[], mode: Req
       if (first.line <= frame.headerLine || !indexInside(first.tokenIndex, frame.header + 1, frame.stop)) continue;
       if (first.line === frame.firstVariantLine) plan.baseLevels = Math.max(0, plan.baseLevels - 1);
       plan.additiveLevels += 1;
-      if (mode === "full" && frame.unbarredVariantStarts.has(first.tokenIndex)) plan.columnOffset += 2;
+      if (full && frame.unbarredVariantStarts.has(first.tokenIndex)) plan.columnOffset += 2;
     }
   }
 }
@@ -1126,7 +1124,7 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
       continuation = line.tokens.at(-1)?.text === "="
         || (continuation && (nextFirstToken === "and" || nextFirstToken === "or"));
     }
-    applySumTypeLayout(plans, sumTypes, settings.alignment === "local" ? settings.sumTypeAlignment : "indent");
+    applySumTypeLayout(plans, sumTypes, settings.alignment === "local" && settings.clauseAlignment === "full");
     for (const chain of [...fluent.chains].sort((left, right) => (right.stop - right.start) - (left.stop - left.start))) {
       const rootPlan = plans.find((plan) => plan.tokens.some((token) => token.tokenIndex === chain.rootStop));
       const rootIndentation = rootPlan ? fluentIndentation(rootPlan, fluent.suffixes, fluent.chains) : 0;
