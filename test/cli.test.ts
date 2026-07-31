@@ -32,6 +32,14 @@ test("in-place formatting validates every file before replacing any file", async
   assert.equal(await readFile(valid, "utf8"), source);
 });
 
+test("reports named-file I/O failures without a Node stack trace", () => {
+  const missing = join(tmpdir(), `quintfmt-missing-${process.pid}.qnt`);
+  const result = spawnSync(process.execPath, [cli, missing], { encoding: "utf8" });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, new RegExp(`${missing}: QFMT_IO:`));
+  assert.doesNotMatch(result.stderr, /node:internal\/fs/);
+});
+
 test("discovers .quintfmt.conf and lets --no-config bypass it", async () => {
   const directory = await mkdtemp(join(tmpdir(), "quintfmt-config-"));
   const file = join(directory, "Demo.qnt");

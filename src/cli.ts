@@ -195,12 +195,19 @@ async function main(): Promise<void> {
     let changed = false;
     const prepared: Array<{ file: string; source: string; formatted: string }> = [];
     for (const file of files) {
-      if (writeInPlace && (await lstat(file)).isSymbolicLink()) {
-        console.error(`${file}: QFMT_SYMLINK: refusing to replace a symbolic link`);
+      let source: string;
+      try {
+        if (writeInPlace && (await lstat(file)).isSymbolicLink()) {
+          console.error(`${file}: QFMT_SYMLINK: refusing to replace a symbolic link`);
+          process.exitCode = 2;
+          continue;
+        }
+        source = await readFile(file, "utf8");
+      } catch (error) {
+        console.error(`${file}: QFMT_IO: ${error instanceof Error ? error.message : String(error)}`);
         process.exitCode = 2;
         continue;
       }
-      const source = await readFile(file, "utf8");
       const result = format(source, options);
       if (!result.ok) {
         for (const diagnostic of result.diagnostics) console.error(`${file}:${diagnostic.line}:${diagnostic.column}: ${diagnostic.code}: ${diagnostic.message}`);
