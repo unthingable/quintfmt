@@ -144,6 +144,41 @@ test("indents multiline sum-type variants with or without a leading first bar", 
   assert.deepEqual(format(result.formatted), result);
 });
 
+test("full sum-type alignment gives an optional leading bar a ghost column", () => {
+  const source = `module Demo {\n  type Store =\n  NoStage\n  | Staged(int)\n}\n`;
+  const full = format(source, { sumTypeAlignment: "full" });
+  const globallyOff = format(source, { alignment: "off", sumTypeAlignment: "full" });
+  assert.equal(full.ok, true);
+  assert.equal(globallyOff.ok, true);
+  if (!full.ok || !globallyOff.ok) return;
+  assert.match(full.formatted, /type Store =\n      NoStage\n    \| Staged\(int\)/);
+  assert.match(globallyOff.formatted, /type Store =\n    NoStage\n    \| Staged\(int\)/);
+  assert.deepEqual(format(full.formatted, { sumTypeAlignment: "full" }), full);
+});
+
+test("sum-type nesting composes with record bodies at every indent width", () => {
+  const source = `module Demo {\n  type TerminalRecord =\n    EarlyN0({ admission: str })\n  | E1Resolved({\n    committed: str,\n    release: str,\n    outcome: str,\n  })\n}\n`;
+  for (const indentWidth of [1, 2, 4]) {
+    const result = format(source, { indentWidth, sumTypeAlignment: "full" });
+    assert.equal(result.ok, true);
+    if (!result.ok) continue;
+    assert.match(result.formatted, new RegExp(`type TerminalRecord =\\n${" ".repeat(indentWidth * 2 + 2)}EarlyN0\\(\\{ admission: str \\}\\)\\n${" ".repeat(indentWidth * 2)}\\| E1Resolved\\(\\{\\n${" ".repeat(indentWidth * 3)}committed:`));
+    assert.match(result.formatted, new RegExp(`\\n${" ".repeat(indentWidth * 2)}\\}\\)`));
+    assert.deepEqual(format(result.formatted, { indentWidth, sumTypeAlignment: "full" }), result);
+  }
+});
+
+test("first sum variants do not inherit a definition continuation block", () => {
+  for (const first of ["A", "| A"]) {
+    const source = `module Demo {\n  type Terminal =\n    ${first}({\n      value: str,\n    })\n    | B\n}\n`;
+    const result = format(source);
+    assert.equal(result.ok, true);
+    if (!result.ok) continue;
+    assert.match(result.formatted, /type Terminal =\n    \|? ?A\(\{\n      value: str,\n    \}\)\n    \| B/);
+    assert.deepEqual(format(result.formatted), result);
+  }
+});
+
 test("breaks a definition before a match body regardless of line width", () => {
   const source = `module Demo {\n  action choose(worker: Worker): bool = match state.workers.get(worker) {\n    | Ready => true\n    | _ => false\n  }\n}\n`;
   const result = format(source, { maxLineLength: 200 });

@@ -14,6 +14,7 @@ test("parses supported .quintfmt.conf options", () => {
     alignment.recordMaxPadding = unlimited
     alignment.records = off
     alignment.clauses = full
+    alignment.sums = full
     definitions.spacing = compact
     blankLines.policy = single
     lineEnding = crlf
@@ -26,6 +27,7 @@ test("parses supported .quintfmt.conf options", () => {
     recordMaxAlignmentPadding: "unlimited",
     recordAlignment: "off",
     clauseAlignment: "full",
+    sumTypeAlignment: "full",
     definitionSpacing: "compact",
     blankLinePolicy: "single",
     lineEnding: "crlf",
@@ -41,4 +43,5 @@ test("rejects unknown and invalid .quintfmt.conf options", () => {
   assert.throws(() => parseConfig("blankLines.policy = many"), ConfigError);
   assert.throws(() => parseConfig("lineEnding = mac"), ConfigError);
   assert.throws(() => parseConfig("alignment.clauses = local"), ConfigError);
+  assert.throws(() => parseConfig("alignment.sums = local"), ConfigError);
 });

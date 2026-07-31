@@ -11,6 +11,7 @@ export interface FormatOptions {
   declarationAlignment?: "types" | "columns" | "off";
   recordAlignment?: "local" | "off";
   clauseAlignment?: "off" | "operator" | "full";
+  sumTypeAlignment?: "indent" | "full";
   definitionSpacing?: "nontrivial" | "compact";
   blankLinePolicy?: "preserve" | "single";
   lineEnding?: "preserve" | "lf" | "crlf";
@@ -36,6 +37,7 @@ const defaultOptions: Required<FormatOptions> = {
   declarationAlignment: "types",
   recordAlignment: "local",
   clauseAlignment: "operator",
+  sumTypeAlignment: "indent",
   definitionSpacing: "nontrivial",
   blankLinePolicy: "preserve",
   lineEnding: "preserve",
@@ -57,11 +59,19 @@ type FluentSuffix = {
   openParen?: number;
   closeParen?: number;
 };
-type SumTypeFrame = { header: number; headerLine: number; stop: number; indentation: number };
+type SumTypeFrame = {
+  header: number;
+  headerLine: number;
+  firstVariantLine: number;
+  stop: number;
+  unbarredVariantStarts: Set<number>;
+};
 type LinePlan = {
   line: Line;
   tokens: Token[];
-  indentation: number;
+  baseLevels: number;
+  additiveLevels: number;
+  columnOffset: number;
   kind: "verbatim" | "comment" | "blank" | "tokens";
   matchBodyIndex: number | null;
 };
@@ -347,12 +357,23 @@ function fluentContinuations(tree: ParserRuleContext, tokens: Token[]): { chains
   return { chains, suffixes };
 }
 
-function sumTypeFrames(tree: ParserRuleContext): SumTypeFrame[] {
+function sumTypeFrames(tree: ParserRuleContext, tokens: Token[]): SumTypeFrame[] {
   const frames: SumTypeFrame[] = [];
   visitContexts(tree, (context) => {
     if (!(context instanceof TypeSumDefContext) || context.start.line === context.stop?.line) return;
     const header = context.ASGN().symbol;
-    frames.push({ header: header.tokenIndex, headerLine: header.line, stop: context.stop!.tokenIndex, indentation: 0 });
+    const variants = context.sumTypeDefinition().typeSumVariant();
+    const unbarredVariantStarts = new Set(variants
+      .filter((variant) => !tokens.slice(header.tokenIndex + 1, variant.start.tokenIndex)
+        .some((token) => token.channel === Token.DEFAULT_CHANNEL && token.text === "|"))
+      .map((variant) => variant.start.tokenIndex));
+    frames.push({
+      header: header.tokenIndex,
+      headerLine: header.line,
+      firstVariantLine: variants[0]!.start.line,
+      stop: context.stop!.tokenIndex,
+      unbarredVariantStarts,
+    });
   });
   return frames;
 }
@@ -376,6 +397,10 @@ function suffixTargetAt(index: number, suffixes: FluentSuffix[], chains: FluentC
   return target;
 }
 
+function plannedLevels(plan: LinePlan): number {
+  return plan.baseLevels + plan.additiveLevels;
+}
+
 function fluentIndentation(plan: LinePlan, suffixes: FluentSuffix[], chains: FluentChain[]): number {
   const tokens = plan.tokens.filter((token) => token.channel === Token.DEFAULT_CHANNEL);
   if (tokens.length) {
@@ -386,10 +411,10 @@ function fluentIndentation(plan: LinePlan, suffixes: FluentSuffix[], chains: Flu
         ? suffixTargetAt(first, [suffix], chains)
         : 0,
     ), 0);
-    return Math.max(plan.indentation, target);
+    return Math.max(plannedLevels(plan), target);
   }
   const first = plan.tokens[0]?.tokenIndex;
-  if (first === undefined) return plan.indentation;
+  if (first === undefined) return plannedLevels(plan);
   let target = 0;
   for (const suffix of suffixes) {
     if (indexInside(first, suffix.triviaStart, suffix.dot - 1)) {
@@ -398,19 +423,25 @@ function fluentIndentation(plan: LinePlan, suffixes: FluentSuffix[], chains: Flu
       target = Math.max(target, suffixTargetAt(first, [suffix], chains));
     }
   }
-  return Math.max(plan.indentation, target);
+  return Math.max(plannedLevels(plan), target);
 }
 
-function sumTypeIndentation(plan: LinePlan, frames: SumTypeFrame[]): number {
-  const first = plan.tokens[0];
-  if (!first) return plan.indentation;
-  const target = frames.reduce((maximum, frame) => Math.max(
-    maximum,
-    first.line > frame.headerLine && indexInside(first.tokenIndex, frame.header + 1, frame.stop)
-      ? frame.indentation
-      : 0,
-  ), 0);
-  return Math.max(plan.indentation, target);
+function applySumTypeLayout(plans: LinePlan[], frames: SumTypeFrame[], mode: Required<FormatOptions>["sumTypeAlignment"]): void {
+  for (const plan of plans) {
+    const first = plan.tokens[0];
+    if (!first) continue;
+    for (const frame of frames) {
+      if (first.line <= frame.headerLine || !indexInside(first.tokenIndex, frame.header + 1, frame.stop)) continue;
+      if (first.line === frame.firstVariantLine) plan.baseLevels = Math.max(0, plan.baseLevels - 1);
+      plan.additiveLevels += 1;
+      if (mode === "full" && frame.unbarredVariantStarts.has(first.tokenIndex)) plan.columnOffset += 2;
+    }
+  }
+}
+
+function beginsSumTypeBody(tokens: Token[], frames: SumTypeFrame[]): boolean {
+  const first = tokens[0];
+  return Boolean(first && frames.some((frame) => first.line > frame.headerLine && indexInside(first.tokenIndex, frame.header + 1, frame.stop)));
 }
 
 function conditionalFrames(tree: ParserRuleContext, tokens: Token[]): ConditionalFrame[] {
@@ -962,7 +993,7 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
     const lines = makeLines(source, parsed.tokens);
     const conditionals = conditionalFrames(parsed.tree, parsed.tokens);
     const fluent = fluentContinuations(parsed.tree, parsed.tokens);
-    const sumTypes = sumTypeFrames(parsed.tree);
+    const sumTypes = sumTypeFrames(parsed.tree, parsed.tokens);
     const plans: LinePlan[] = [];
     let depth = 0;
     let continuation = false;
@@ -1040,7 +1071,7 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
       const layoutTokens = line.tokens.length ? line.tokens : line.comments;
       const conditionalLayout = conditionalIndentation(layoutTokens, conditionals);
       const beginsPendingMatchBody = pendingMatchBody && line.tokens[0]?.type === QuintLexer.MATCH && braceDelta(line.tokens) > 0;
-      const beginsContinuationBlock = continuation && !beginsPendingMatchBody && !conditionalLayout.definitionStart && braceDelta(line.tokens) > 0;
+      const beginsContinuationBlock = continuation && !beginsPendingMatchBody && !conditionalLayout.definitionStart && !beginsSumTypeBody(line.tokens, sumTypes) && braceDelta(line.tokens) > 0;
       const lineDepth = startsClose(line.tokens) ? Math.max(0, depth - 1) : depth;
       const closesParameters = definitionParameterDepth > 0 && line.tokens[0]?.text === ")";
       const closesCall = callContinuationDepth > 0 && line.tokens[0]?.text === ")";
@@ -1048,7 +1079,7 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
       const structuralBase = lineDepth + matchBodyBraceDepths.length + continuationBlockBraceDepths.length;
       const normalIndentation = structuralBase + conditionalLayout.depth + (beginsNestedMatchBody ? 1 : 0) + (pendingMatchArmBody ? 1 : 0) + (((continuation && !conditionalLayout.definitionStart && !conditionalLayout.branchIndent) && !startsClose(line.tokens)) || (definitionParameterDepth > 0 && !closesParameters) || (callContinuationDepth > 0 && !closesCall) ? 1 : 0);
       if (line.verbatim) {
-        plans.push({ line, tokens: layoutTokens, indentation: normalIndentation, kind: "verbatim", matchBodyIndex: null });
+        plans.push({ line, tokens: layoutTokens, baseLevels: normalIndentation, additiveLevels: 0, columnOffset: 0, kind: "verbatim", matchBodyIndex: null });
         advanceBraceDepth(line.tokens);
         advanceLayoutState(line.tokens, beginsPendingMatchBody ? 0 : null, beginsContinuationBlock ? 0 : null);
         continue;
@@ -1058,7 +1089,9 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
         plans.push({
           line,
           tokens: layoutTokens,
-          indentation: depth + conditionalLayout.depth,
+          baseLevels: depth + conditionalLayout.depth,
+          additiveLevels: 0,
+          columnOffset: 0,
           kind: multilineComment ? "verbatim" : line.comments.length ? "comment" : "blank",
           matchBodyIndex: null,
         });
@@ -1067,40 +1100,37 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
         continue;
       }
       if (line.comments.some((comment) => comment.type === QuintLexer.COMMENT && (comment.text ?? "").includes("\n"))) {
-        plans.push({ line, tokens: layoutTokens, indentation: 0, kind: "verbatim", matchBodyIndex: null });
+        plans.push({ line, tokens: layoutTokens, baseLevels: 0, additiveLevels: 0, columnOffset: 0, kind: "verbatim", matchBodyIndex: null });
         advanceBraceDepth(line.tokens);
         advanceLayoutState(line.tokens, beginsPendingMatchBody ? 0 : null, beginsContinuationBlock ? 0 : null);
         continue;
       }
       if (line.tokens[0]?.type === QuintLexer.HASHBANG_LINE) {
-        plans.push({ line, tokens: layoutTokens, indentation: 0, kind: "verbatim", matchBodyIndex: null });
+        plans.push({ line, tokens: layoutTokens, baseLevels: 0, additiveLevels: 0, columnOffset: 0, kind: "verbatim", matchBodyIndex: null });
         advanceBraceDepth(line.tokens);
         advanceLayoutState(line.tokens, beginsPendingMatchBody ? 0 : null, beginsContinuationBlock ? 0 : null);
         continue;
       }
       if (line.tokens.length === 1 && line.tokens[0]?.type === QuintLexer.DOCCOMMENT) {
-        plans.push({ line, tokens: layoutTokens, indentation: 0, kind: "verbatim", matchBodyIndex: null });
+        plans.push({ line, tokens: layoutTokens, baseLevels: 0, additiveLevels: 0, columnOffset: 0, kind: "verbatim", matchBodyIndex: null });
         advanceBraceDepth(line.tokens);
         advanceLayoutState(line.tokens, beginsPendingMatchBody ? 0 : null, beginsContinuationBlock ? 0 : null);
         continue;
       }
       depth = lineDepth;
       const matchBodyIndex = line.comments.length ? null : definitionMatchBodyIndex(line.tokens);
-      plans.push({ line, tokens: line.tokens, indentation: normalIndentation, kind: "tokens", matchBodyIndex });
+      plans.push({ line, tokens: line.tokens, baseLevels: normalIndentation, additiveLevels: 0, columnOffset: 0, kind: "tokens", matchBodyIndex });
       depth = Math.max(0, depth + braceDelta(line.tokens) + (startsClose(line.tokens) ? 1 : 0));
       advanceLayoutState(line.tokens, matchBodyIndex ?? (beginsPendingMatchBody ? 0 : null), beginsContinuationBlock ? 0 : null);
       const nextFirstToken = lines[lineIndex + 1]?.tokens[0]?.text;
       continuation = line.tokens.at(-1)?.text === "="
         || (continuation && (nextFirstToken === "and" || nextFirstToken === "or"));
     }
+    applySumTypeLayout(plans, sumTypes, settings.alignment === "local" ? settings.sumTypeAlignment : "indent");
     for (const chain of [...fluent.chains].sort((left, right) => (right.stop - right.start) - (left.stop - left.start))) {
       const rootPlan = plans.find((plan) => plan.tokens.some((token) => token.tokenIndex === chain.rootStop));
       const rootIndentation = rootPlan ? fluentIndentation(rootPlan, fluent.suffixes, fluent.chains) : 0;
       chain.hang = rootIndentation + 1;
-    }
-    for (const frame of sumTypes) {
-      const headerPlan = plans.find((plan) => plan.tokens.some((token) => token.tokenIndex === frame.header));
-      frame.indentation = (headerPlan?.indentation ?? 0) + 1;
     }
     const rendered: string[] = [];
     const barriers: boolean[] = [];
@@ -1116,23 +1146,21 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
         barriers.push(line.barrier || Boolean(line.source.trim()));
         continue;
       }
-      const indentation = sumTypeIndentation(
-        { ...plan, indentation: fluentIndentation(plan, fluent.suffixes, fluent.chains) },
-        sumTypes,
-      );
+      const indentation = fluentIndentation(plan, fluent.suffixes, fluent.chains);
+      const indentationColumns = indentation * settings.indentWidth + plan.columnOffset;
       if (plan.kind === "comment") {
-        rendered.push(`${" ".repeat(indentation * settings.indentWidth)}${line.source.trimStart()}`);
+        rendered.push(`${" ".repeat(indentationColumns)}${line.source.trimStart()}`);
         barriers.push(line.barrier || Boolean(line.source.trim()));
         continue;
       }
       if (plan.matchBodyIndex !== null) {
-        rendered.push(`${" ".repeat(indentation * settings.indentWidth)}${renderTokens(line.tokens.slice(0, plan.matchBodyIndex))}`.trimEnd());
+        rendered.push(`${" ".repeat(indentationColumns)}${renderTokens(line.tokens.slice(0, plan.matchBodyIndex))}`.trimEnd());
         barriers.push(false);
         rendered.push(`${" ".repeat((indentation + 1) * settings.indentWidth)}${renderTokens(line.tokens.slice(plan.matchBodyIndex))}`);
         barriers.push(line.barrier);
         continue;
       }
-      let value = `${" ".repeat(indentation * settings.indentWidth)}${renderTokens(line.tokens)}`;
+      let value = `${" ".repeat(indentationColumns)}${renderTokens(line.tokens)}`;
       if (line.comments.length) value += `  ${line.comments.map(splitComment).join(" ")}`;
       rendered.push(line.comments.length ? value : value.trimEnd());
       barriers.push(line.barrier);
