@@ -1,6 +1,6 @@
 import { CharStreams, CommonTokenStream, ParserRuleContext, Token } from "antlr4ts";
 import { QuintLexer } from "./generated/vendor/quint/QuintLexer.js";
-import { DotCallContext, MatchContext, MatchSumCaseContext, OperAppContext, QuintParser } from "./generated/vendor/quint/QuintParser.js";
+import { DotCallContext, IfElseContext, MatchContext, MatchSumCaseContext, OperAppContext, QuintParser } from "./generated/vendor/quint/QuintParser.js";
 
 export interface FormatOptions {
   indentWidth?: number;
@@ -42,6 +42,12 @@ const defaultOptions: Required<FormatOptions> = {
 };
 
 type Line = { source: string; tokens: Token[]; comments: Token[]; barrier: boolean; verbatim: boolean };
+type ConditionalFrame = {
+  start: number;
+  stop: number;
+  definitionBody: boolean;
+  branches: Array<{ start: number; stop: number; suppliesContinuationIndent: boolean }>;
+};
 
 function parse(source: string): { tokens: Token[]; diagnostics: Diagnostic[]; tree: ReturnType<QuintParser["modules"]> } {
   const lexer = new QuintLexer(CharStreams.fromString(source));
@@ -275,6 +281,69 @@ function lastLine(token: Token): number {
   return token.line + ((token.text ?? "").match(/\n/g)?.length ?? 0);
 }
 
+function previousDefaultToken(tokens: Token[], index: number): Token | null {
+  for (let current = index - 1; current >= 0; current -= 1) {
+    if (tokens[current]?.channel === Token.DEFAULT_CHANNEL) return tokens[current]!;
+  }
+  return null;
+}
+
+function conditionalFrames(tree: ParserRuleContext, tokens: Token[]): ConditionalFrame[] {
+  const frames: ConditionalFrame[] = [];
+  visitContexts(tree, (context) => {
+    if (!(context instanceof IfElseContext)) return;
+    const expressions = context.expr();
+    if (expressions.length !== 3 || context.start.line === context.stop?.line) return;
+    const previous = previousDefaultToken(tokens, context.start.tokenIndex);
+    frames.push({
+      start: context.start.tokenIndex,
+      stop: context.stop!.tokenIndex,
+      definitionBody: previous?.text === "=" && previous.line < context.start.line,
+      branches: expressions.slice(1).map((expression, branchIndex) => {
+        const introducerLine = branchIndex === 0
+          ? context.start.line
+          : tokens.slice(expressions[branchIndex]!.stop!.tokenIndex + 1, expression.start.tokenIndex)
+            .find((token) => token.text === "else")?.line ?? expression.start.line;
+        const firstToken = tokens[expression.start.tokenIndex];
+        const openingLine = tokens.slice(expression.start.tokenIndex, expression.stop!.tokenIndex + 1)
+          .filter((token) => token.channel === Token.DEFAULT_CHANNEL && token.line === expression.start.line);
+        const leavesBraceOpen = braceDelta(openingLine) > 0;
+        const startsCallContinuation = openingLine.at(-1)?.text === "(";
+        return {
+          start: expression.start.tokenIndex,
+          stop: expression.stop!.tokenIndex,
+          suppliesContinuationIndent: firstToken?.text === "{"
+            ? leavesBraceOpen
+            : expression.start.line === introducerLine && (leavesBraceOpen || startsCallContinuation),
+        };
+      }),
+    });
+  });
+  return frames;
+}
+
+function conditionalIndentation(tokens: Token[], frames: ConditionalFrame[]): { depth: number; definitionStart: boolean; branchIndent: boolean } {
+  const first = tokens[0]?.tokenIndex;
+  const last = tokens.at(-1)?.tokenIndex;
+  if (first === undefined || last === undefined) return { depth: 0, definitionStart: false, branchIndent: false };
+  let depth = 0;
+  let definitionStart = false;
+  let branchIndent = false;
+  for (const frame of frames) {
+    if (frame.definitionBody && first >= frame.start && last <= frame.stop) {
+      depth += 1;
+      definitionStart ||= first === frame.start;
+    }
+    for (const branch of frame.branches) {
+      if (!branch.suppliesContinuationIndent && first >= branch.start && last <= branch.stop) {
+        depth += 1;
+        branchIndent = true;
+      }
+    }
+  }
+  return { depth, definitionStart, branchIndent };
+}
+
 function callDepth(context: ParserRuleContext): number {
   return ancestors(context).filter((parent) => parent instanceof OperAppContext || parent instanceof DotCallContext).length;
 }
@@ -363,6 +432,35 @@ function wrapOversizedMatchCalls(
     });
   }
   return { lines: wrappedLines, barriers: wrappedBarriers, changed: selected.size > 0 };
+}
+
+function indentMultilineMatchCallArguments(lines: string[], indentWidth: number, clauseAlignment: Required<FormatOptions>["clauseAlignment"]): string[] {
+  if (clauseAlignment !== "full") return lines;
+  const source = `${lines.join("\n")}\n`;
+  const parsed = parse(source);
+  if (parsed.diagnostics.length) return lines;
+  const output = [...lines];
+  visitContexts(parsed.tree, (context) => {
+    if (!(context instanceof OperAppContext || context instanceof DotCallContext) || !multilineMatchCase(context)) return;
+    const argList = context.argList();
+    const open = context.LPAREN()?.symbol;
+    const close = context.RPAREN()?.symbol;
+    if (!argList || !open || !close || open.line === close.line) return;
+    const arguments_ = argList.expr();
+    if (!arguments_.length || arguments_.some((argument) => argument.start.line !== argument.stop?.line)) return;
+    if (parsed.tokens.slice(open.tokenIndex, close.tokenIndex + 1).some(isComment)) return;
+    const openingLine = open.line - 1;
+    const closingLine = close.line - 1;
+    const argumentLines = arguments_.map((argument) => argument.start.line - 1);
+    if (argumentLines.some((line) => line <= openingLine || line >= closingLine)) return;
+    const indentation = output[openingLine]?.match(/^\s*/)?.[0] ?? "";
+    const argumentIndentation = `${indentation}${" ".repeat(indentWidth)}`;
+    for (const line of argumentLines) output[line] = `${argumentIndentation}${output[line]!.trimStart()}`;
+    output[closingLine] = `${indentation}${output[closingLine]!.trimStart()}`;
+    const nextLine = closingLine + 1;
+    if (/^\s*(?:and|or)\b/.test(output[nextLine] ?? "")) output[nextLine] = `${indentation}${output[nextLine]!.trimStart()}`;
+  });
+  return output;
 }
 
 function containsStringLiteral(line: string): boolean {
@@ -519,6 +617,7 @@ function expandBooleanDefinitionChains(
       && /=\s*$/.test(expanded[index]!)
       && index + 2 < expanded.length
       && !expandedBarriers[index + 2]
+      && !/^\s*if\b/.test(expanded[index + 1]!)
       && /^\s*(?!and\b|or\b).+?\s*(==|!=|<=|>=|<|>)\s*.+$/.test(expanded[index + 1]!)
       && /^\s*(?:and|or)\b/.test(expanded[index + 2]!);
     if (!definition && !(clauseAlignment === "full" && matchArm) && !fullChainHeader) continue;
@@ -527,6 +626,7 @@ function expandBooleanDefinitionChains(
       && /=\s*$/.test(expanded[index]!)
       && index + 2 < expanded.length
       && !expandedBarriers[index + 2]
+      && !/^\s*if\b/.test(expanded[index + 1]!)
       && /^\s*(?:and|or)\b/.test(expanded[index + 2]!);
     const matchArmChain = matchArm
       && index + 2 < expanded.length
@@ -538,8 +638,9 @@ function expandBooleanDefinitionChains(
     if (inline && !match) continue;
     const header = match?.[1] ?? expanded[index]!;
     const baseIndentation = indentation(header);
-    const firstIndent = " ".repeat(baseIndentation + (clauseAlignment === "full" ? "and ".length : indentWidth));
-    const logicalIndent = " ".repeat(clauseAlignment === "full" ? baseIndentation : baseIndentation + indentWidth);
+    const bodyIndentation = baseIndentation + indentWidth;
+    const firstIndent = " ".repeat(bodyIndentation + (clauseAlignment === "full" ? "and ".length : 0));
+    const logicalIndent = " ".repeat(bodyIndentation);
     let firstIndex = index + 1;
     if (match) {
       expanded[index] = header;
@@ -734,6 +835,7 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
     const parsed = parse(source);
     if (parsed.diagnostics.length) return { ok: false, formatted: null, diagnostics: parsed.diagnostics };
     const lines = makeLines(source, parsed.tokens);
+    const conditionals = conditionalFrames(parsed.tree, parsed.tokens);
     const rendered: string[] = [];
     const barriers: boolean[] = [];
     let depth = 0;
@@ -741,6 +843,7 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
     let definitionParameterDepth = 0;
     let callContinuationDepth = 0;
     const matchBodyBraceDepths: number[] = [];
+    const continuationBlockBraceDepths: number[] = [];
     let pendingMatchBody = false;
     let pendingMatchArmBody = false;
     const updateDefinitionParameterDepth = (tokens: Token[]) => {
@@ -775,64 +878,86 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
         }
       }
     };
+    const updateContinuationBlockBraceDepth = (tokens: Token[], openedAt: number | null = null) => {
+      if (openedAt !== null) {
+        continuationBlockBraceDepths.push(braceDelta(tokens.slice(openedAt)));
+      } else if (continuationBlockBraceDepths.length) {
+        let delta = braceDelta(tokens);
+        while (delta !== 0 && continuationBlockBraceDepths.length) {
+          const top = continuationBlockBraceDepths.length - 1;
+          const next = continuationBlockBraceDepths[top]! + delta;
+          if (next > 0) {
+            continuationBlockBraceDepths[top] = next;
+            delta = 0;
+          } else {
+            continuationBlockBraceDepths.pop();
+            delta = next;
+          }
+        }
+      }
+    };
     const advanceBraceDepth = (tokens: Token[]) => {
       if (startsClose(tokens)) depth = Math.max(0, depth - 1);
       depth = Math.max(0, depth + braceDelta(tokens) + (startsClose(tokens) ? 1 : 0));
     };
-    const advanceLayoutState = (tokens: Token[], openedAt: number | null = null) => {
+    const advanceLayoutState = (tokens: Token[], openedAt: number | null = null, continuationOpenedAt: number | null = null) => {
       if (!tokens.length) return;
       updateDefinitionParameterDepth(tokens);
       updateCallContinuationDepth(tokens);
       updateMatchBodyBraceDepth(tokens, openedAt);
+      updateContinuationBlockBraceDepth(tokens, continuationOpenedAt);
       pendingMatchArmBody = tokens[0]?.text === "|" && tokens.at(-1)?.text === "=>";
       pendingMatchBody = tokens.at(-1)?.text === "=";
     };
     for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
       const line = lines[lineIndex]!;
+      const layoutTokens = line.tokens.length ? line.tokens : line.comments;
+      const conditionalLayout = conditionalIndentation(layoutTokens, conditionals);
       const beginsPendingMatchBody = pendingMatchBody && line.tokens[0]?.type === QuintLexer.MATCH && braceDelta(line.tokens) > 0;
+      const beginsContinuationBlock = continuation && !beginsPendingMatchBody && !conditionalLayout.definitionStart && braceDelta(line.tokens) > 0;
       if (line.verbatim) {
         rendered.push(line.source);
         barriers.push(true);
         advanceBraceDepth(line.tokens);
-        advanceLayoutState(line.tokens, beginsPendingMatchBody ? 0 : null);
+        advanceLayoutState(line.tokens, beginsPendingMatchBody ? 0 : null, beginsContinuationBlock ? 0 : null);
         continue;
       }
       if (!line.tokens.length) {
         const multilineComment = line.comments.some((comment) => comment.type === QuintLexer.COMMENT && (comment.text ?? "").includes("\n"));
         rendered.push(line.comments.length && !multilineComment
-          ? `${" ".repeat(depth * settings.indentWidth)}${line.source.trimStart()}`
+          ? `${" ".repeat((depth + conditionalLayout.depth) * settings.indentWidth)}${line.source.trimStart()}`
           : line.source.trimEnd());
         barriers.push(line.barrier || Boolean(line.source.trim()));
         advanceBraceDepth(line.tokens);
-        advanceLayoutState(line.tokens, beginsPendingMatchBody ? 0 : null);
+        advanceLayoutState(line.tokens, beginsPendingMatchBody ? 0 : null, beginsContinuationBlock ? 0 : null);
         continue;
       }
       if (line.comments.some((comment) => comment.type === QuintLexer.COMMENT && (comment.text ?? "").includes("\n"))) {
         rendered.push(line.source.trimEnd());
         barriers.push(true);
         advanceBraceDepth(line.tokens);
-        advanceLayoutState(line.tokens, beginsPendingMatchBody ? 0 : null);
+        advanceLayoutState(line.tokens, beginsPendingMatchBody ? 0 : null, beginsContinuationBlock ? 0 : null);
         continue;
       }
       if (line.tokens[0]?.type === QuintLexer.HASHBANG_LINE) {
         rendered.push(line.source);
         barriers.push(true);
         advanceBraceDepth(line.tokens);
-        advanceLayoutState(line.tokens, beginsPendingMatchBody ? 0 : null);
+        advanceLayoutState(line.tokens, beginsPendingMatchBody ? 0 : null, beginsContinuationBlock ? 0 : null);
         continue;
       }
       if (line.tokens.length === 1 && line.tokens[0]?.type === QuintLexer.DOCCOMMENT) {
         rendered.push(line.source);
         barriers.push(true);
         advanceBraceDepth(line.tokens);
-        advanceLayoutState(line.tokens, beginsPendingMatchBody ? 0 : null);
+        advanceLayoutState(line.tokens, beginsPendingMatchBody ? 0 : null, beginsContinuationBlock ? 0 : null);
         continue;
       }
       if (startsClose(line.tokens)) depth = Math.max(0, depth - 1);
       const closesParameters = definitionParameterDepth > 0 && line.tokens[0]?.text === ")";
       const closesCall = callContinuationDepth > 0 && line.tokens[0]?.text === ")";
       const beginsNestedMatchBody = beginsPendingMatchBody && matchBodyBraceDepths.length > 0;
-      const indentation = depth + matchBodyBraceDepths.length + (beginsNestedMatchBody ? 1 : 0) + (pendingMatchArmBody ? 1 : 0) + ((continuation && !startsClose(line.tokens)) || (definitionParameterDepth > 0 && !closesParameters) || (callContinuationDepth > 0 && !closesCall) ? 1 : 0);
+      const indentation = depth + matchBodyBraceDepths.length + continuationBlockBraceDepths.length + conditionalLayout.depth + (beginsNestedMatchBody ? 1 : 0) + (pendingMatchArmBody ? 1 : 0) + (((continuation && !conditionalLayout.definitionStart && !conditionalLayout.branchIndent) && !startsClose(line.tokens)) || (definitionParameterDepth > 0 && !closesParameters) || (callContinuationDepth > 0 && !closesCall) ? 1 : 0);
       const matchBodyIndex = line.comments.length ? null : definitionMatchBodyIndex(line.tokens);
       if (matchBodyIndex !== null) {
         rendered.push(`${" ".repeat(indentation * settings.indentWidth)}${renderTokens(line.tokens.slice(0, matchBodyIndex))}`.trimEnd());
@@ -846,7 +971,7 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
         barriers.push(line.barrier);
       }
       depth = Math.max(0, depth + braceDelta(line.tokens) + (startsClose(line.tokens) ? 1 : 0));
-      advanceLayoutState(line.tokens, matchBodyIndex ?? (beginsPendingMatchBody ? 0 : null));
+      advanceLayoutState(line.tokens, matchBodyIndex ?? (beginsPendingMatchBody ? 0 : null), beginsContinuationBlock ? 0 : null);
       const nextFirstToken = lines[lineIndex + 1]?.tokens[0]?.text;
       continuation = line.tokens.at(-1)?.text === "="
         || (continuation && (nextFirstToken === "and" || nextFirstToken === "or"));
@@ -899,7 +1024,7 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
       layout = alignLayout(wrappedCalls);
       if (pass > 0 && !wrappedCalls.changed) break;
     }
-    const fullChains = layout.lines;
+    const fullChains = indentMultilineMatchCallArguments(layout.lines, settings.indentWidth, settings.clauseAlignment);
     const spaced = settings.definitionSpacing === "nontrivial"
       ? separateNontrivialDefinitions(fullChains)
       : fullChains;

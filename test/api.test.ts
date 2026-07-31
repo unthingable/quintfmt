@@ -259,6 +259,98 @@ test("lays out multiline Boolean definition chains beneath their header", () => 
   assert.deepEqual(format(result.formatted), result);
 });
 
+test("keeps a multiline conditional expression inside its definition body", () => {
+  const source = `module Demo {\n  pure def contractDigestFor(dispatch: int): str =\n    if (dispatch == 0) {\n      Contract("approved")\n    } else {\n      Contract("changed")\n    }\n}\n`;
+  const result = format(source);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /: str =\n    if\(dispatch == 0\) \{\n      Contract\("approved"\)\n    \} else \{\n      Contract\("changed"\)\n    \}/);
+  assert.deepEqual(format(result.formatted), result);
+});
+
+test("keeps next-line and unbraced conditional branches inside their definition body", () => {
+  const nextLineBrace = `module Demo {\n  pure def f(x: int): int =\n    if (x > 0)\n    {\n      x\n    } else {\n      0\n    }\n}\n`;
+  const unbraced = `module Demo {\n  pure def f(x: int): int =\n    if (x > 0)\n      x\n    else\n      0\n}\n`;
+  for (const source of [nextLineBrace, unbraced]) {
+    const result = format(source);
+    assert.equal(result.ok, true);
+    if (!result.ok) continue;
+    assert.match(result.formatted, /: int =\n    if\(x > 0\)/);
+    assert.match(result.formatted, /\n      (?:\{|x)/);
+    assert.match(result.formatted, /\n    (?:\} )?else/);
+    assert.deepEqual(format(result.formatted), result);
+  }
+});
+
+test("keeps nested and match conditional branches at their CST-defined depth", () => {
+  const nested = `module M {\n  pure def f(a: bool, b: bool): int =\n    if (a)\n      if (b)\n        1\n      else\n        2\n    else\n      3\n}\n`;
+  const matchBranch = `module M {\n  pure def f(a: bool): int =\n    if (a)\n      match value {\n        | Some(v) => longCall(firstLongArgument, secondLongArgument, thirdLongArgument)\n        | _ => 0\n      }\n    else\n      0\n}\n`;
+  for (const source of [nested, matchBranch]) {
+    const result = format(source, { clauseAlignment: "full", maxLineLength: 55 });
+    assert.equal(result.ok, true);
+    if (!result.ok) continue;
+    assert.match(result.formatted, /\n      (?:if\(b\)|match value \{)/);
+    assert.deepEqual(format(result.formatted, { clauseAlignment: "full", maxLineLength: 55 }), result);
+  }
+});
+
+test("does not double-indent an inline structured conditional branch", () => {
+  const source = `module M {\n  pure def f(a: bool): int =\n    if (a) match value {\n      | Some(v) => longCall(firstLongArgument, secondLongArgument, thirdLongArgument)\n      | _ => 0\n    } else 0\n}\n`;
+  const result = format(source, { clauseAlignment: "full", maxLineLength: 55 });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /if\(a\) match value \{\n      \| Some\(v\)/);
+  assert.deepEqual(format(result.formatted, { clauseAlignment: "full", maxLineLength: 55 }), result);
+});
+
+test("uses semantic indentation only when an inline conditional branch has no open delimiter", () => {
+  const balancedBrace = `module M {\n  pure def f(a: bool, b: bool): bool =\n    if (a) { 1 }.contains(1)\n    and b\n    else false\n}\n`;
+  const continuedCall = `module M {\n  pure def f(a: bool): int =\n    if (a) longCall(\n      firstLongArgument,\n      secondLongArgument\n    ) else 0\n}\n`;
+  for (const source of [balancedBrace, continuedCall]) {
+    const result = format(source, { clauseAlignment: "full" });
+    assert.equal(result.ok, true);
+    if (!result.ok) continue;
+    assert.deepEqual(format(result.formatted, { clauseAlignment: "full" }), result);
+  }
+  const balancedResult = format(balancedBrace, { clauseAlignment: "full" });
+  const callResult = format(continuedCall, { clauseAlignment: "full" });
+  if (!balancedResult.ok || !callResult.ok) return;
+  assert.match(balancedResult.formatted, /\n      and b/);
+  assert.match(callResult.formatted, /longCall\(\n      firstLongArgument/);
+});
+
+test("does not treat conditional comparisons or partial parentheses as physical continuations", () => {
+  const conditionalComparison = `module M {\n  pure def f(x: int, b: bool): bool =\n    if (x > 0) true\n    and b\n    else false\n}\n`;
+  const partialParentheses = `module M {\n  pure def f(a: bool, x: int, y: int): int =\n    if (a) (x +\n      y)\n    else 0\n}\n`;
+  for (const source of [conditionalComparison, partialParentheses]) {
+    const result = format(source, { clauseAlignment: "full" });
+    assert.equal(result.ok, true);
+    if (!result.ok) continue;
+    assert.deepEqual(format(result.formatted, { clauseAlignment: "full" }), result);
+  }
+  const comparisonResult = format(conditionalComparison, { clauseAlignment: "full" });
+  const parenthesesResult = format(partialParentheses, { clauseAlignment: "full" });
+  if (!comparisonResult.ok || !parenthesesResult.ok) return;
+  assert.match(comparisonResult.formatted, /=\n    if\(x > 0\) true\n      and b\n    else false/);
+  assert.match(parenthesesResult.formatted, /if\(a\) \(x \+\n      y\)/);
+});
+
+test("does not double-indent inline structured else branches", () => {
+  const callBranch = `module M {\n  pure def f(a: bool): int =\n    if (a)\n      0\n    else longCall(\n      firstLongArgument,\n      secondLongArgument\n    )\n}\n`;
+  const matchBranch = `module M {\n  pure def f(a: bool): int =\n    if (a)\n      0\n    else match value {\n      | Some(v) => v\n      | _ => 0\n    }\n}\n`;
+  for (const source of [callBranch, matchBranch]) {
+    const result = format(source, { clauseAlignment: "full" });
+    assert.equal(result.ok, true);
+    if (!result.ok) continue;
+    assert.deepEqual(format(result.formatted, { clauseAlignment: "full" }), result);
+  }
+  const callResult = format(callBranch, { clauseAlignment: "full" });
+  const matchResult = format(matchBranch, { clauseAlignment: "full" });
+  if (!callResult.ok || !matchResult.ok) return;
+  assert.match(callResult.formatted, /else longCall\(\n      firstLongArgument,\n      secondLongArgument\n    \)/);
+  assert.match(matchResult.formatted, /else match value \{\n      \| Some\(v\) => v\n      \| _ => 0\n    \}/);
+});
+
 test("offers off, operator, and full Boolean-clause layouts", () => {
   const source = `module Demo {\n  val witness = observation.phase == OutcomeRecorded\n  and state.live == SciDriftedSnapshot\n  and observation.outcome == OutcomeN0\n}\n`;
   const off = format(source, { clauseAlignment: "off" });
@@ -270,7 +362,7 @@ test("offers off, operator, and full Boolean-clause layouts", () => {
   if (!off.ok || !operator.ok || !full.ok) return;
   assert.match(off.formatted, /val witness =\n    observation\.phase == OutcomeRecorded\n    and state\.live ==/);
   assert.match(operator.formatted, /val witness =\n    observation\.phase\s+== OutcomeRecorded\n    and state\.live\s+==/);
-  assert.match(full.formatted, /val witness =\n      observation\.phase\s+== OutcomeRecorded\n  and state\.live\s+==/);
+  assert.match(full.formatted, /val witness =\n        observation\.phase\s+== OutcomeRecorded\n    and state\.live\s+==/);
   assert.deepEqual(format(full.formatted, { clauseAlignment: "full" }), full);
 });
 
@@ -293,10 +385,10 @@ test("full clause alignment normalizes trailing connectors and aligns or operand
   assert.equal(mixedResult.ok, true);
   assert.equal(globallyOff.ok, true);
   if (!trailingResult.ok || !mixedResult.ok || !globallyOff.ok) return;
-  assert.match(trailingResult.formatted, /\n  and betaLong/);
+  assert.match(trailingResult.formatted, /\n    and betaLong/);
   const mixedLines = mixedResult.formatted.split("\n");
   assert.equal(mixedLines[2]!.indexOf("=="), mixedLines[3]!.indexOf("=="));
-  assert.match(mixedResult.formatted, /\n  or  betaLong/);
+  assert.match(mixedResult.formatted, /\n    or  betaLong/);
   assert.match(globallyOff.formatted, /\n    alpha == 1\n    or betaLong == 2/);
 });
 
@@ -305,8 +397,8 @@ test("full clause alignment hangs match-arm connectors while aligning operands",
   const result = format(source, { clauseAlignment: "full" });
   assert.equal(result.ok, true);
   if (!result.ok) return;
-  assert.match(result.formatted, /CommittedForDispatch\(committed\) =>\n          committed\.contract/);
-  assert.match(result.formatted, /\n      and committed\.capability/);
+  assert.match(result.formatted, /CommittedForDispatch\(committed\) =>\n            committed\.contract/);
+  assert.match(result.formatted, /\n        and committed\.capability/);
   const lines = result.formatted.split("\n");
   const clauses = lines.filter((line) => /committed\.(?:contract|capability|receipt)/.test(line));
   assert.equal(clauses[0]!.indexOf("=="), clauses[1]!.indexOf("=="));
@@ -328,8 +420,8 @@ test("full clause alignment includes the head after a multiline definition heade
   const result = format(source, { clauseAlignment: "full" });
   assert.equal(result.ok, true);
   if (!result.ok) return;
-  assert.match(result.formatted, /\): bool =\n      request\.capability/);
-  assert.match(result.formatted, /\n  and request\.capability\.stageId/);
+  assert.match(result.formatted, /\): bool =\n        request\.capability/);
+  assert.match(result.formatted, /\n    and request\.capability\.stageId/);
   const lines = result.formatted.split("\n");
   assert.equal(lines[5]!.indexOf("=="), lines[6]!.indexOf("=="));
   assert.equal(lines[6]!.indexOf("=="), lines[7]!.indexOf("=="));
