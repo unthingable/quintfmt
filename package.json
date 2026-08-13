@@ -47,6 +47,7 @@
     "test": "npm run build && node --test dist/test/*.test.js",
     "test:package": "node ./scripts/package-smoke.mjs",
     "check": "npm test && npm run test:package",
+    "prepare": "npm run build",
     "prepack": "npm run build"
   },
   "dependencies": {
