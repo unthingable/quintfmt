@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 const cli = join(process.cwd(), "dist", "src", "cli.js");
+const packageVersion = (JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")) as { version: string }).version;
 
 test("in-place formatting refuses a symbolic link without changing its target", async () => {
   const directory = await mkdtemp(join(tmpdir(), "quintfmt-cli-"));
@@ -76,5 +78,5 @@ test("reports help and the package version", () => {
   assert.match(help.stdout, /--max-line-length <columns>/);
   assert.doesNotMatch(help.stdout, /\\n/);
   assert.equal(version.status, 0);
-  assert.match(version.stdout, /^0\.2\.0\n$/);
+  assert.equal(version.stdout, `${packageVersion}\n`);
 });
