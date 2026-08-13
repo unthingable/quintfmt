@@ -1,9 +1,14 @@
 {
   "name": "quintfmt",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "A conservative, comment-preserving formatter for Quint.",
   "license": "MIT",
-  "keywords": ["quint", "formatter", "formal-methods", "model-checking"],
+  "keywords": [
+    "quint",
+    "formatter",
+    "formal-methods",
+    "model-checking"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/unthingable/quintfmt.git"
@@ -26,7 +31,15 @@
       "default": "./dist/src/index.js"
     }
   },
-  "files": ["dist/src", "docs", "README.md", "CHANGELOG.md", "LICENSE", "vendor/quint/UPSTREAM.md", "vendor/quint/LICENSE"],
+  "files": [
+    "dist/src",
+    "docs",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "vendor/quint/UPSTREAM.md",
+    "vendor/quint/LICENSE"
+  ],
   "scripts": {
     "clean": "node ./scripts/clean-dist.mjs",
     "generate": "antlr4ts -visitor -o src/generated vendor/quint/Quint.g4",

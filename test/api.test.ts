@@ -122,6 +122,15 @@ test("keeps comment trailing whitespace when the line is a comment barrier", () 
   assert.match(result.formatted, /  \/\/ keep three   \n/);
 });
 
+test("indents comment-only record-field documentation with its field", () => {
+  const source = `module Demo {\n  val projection = {\n    evidence: releaseEvidenceFor(\n      dispatch,\n      committed,\n    ),\n// This is the post-release projection.\n// Exactly one event enters the log.\neffectCount: state.effectLog.size() + 1,\n  }\n}\n`;
+  const result = format(source);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /\n    \/\/ This is the post-release projection\.\n    \/\/ Exactly one event enters the log\.\n    effectCount:/);
+  assert.deepEqual(format(result.formatted), result);
+});
+
 test("formats Quint type definitions and match expressions", () => {
   const source = `module Demo {\ntype Worker = WorkerA | WorkerB\ntype State = { worker: Worker, count: int }\npure def isA(worker: Worker): bool = match worker {\n| WorkerA => true\n| WorkerB => false\n}\n}\n`;
   const result = format(source);

@@ -1087,7 +1087,10 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
         plans.push({
           line,
           tokens: layoutTokens,
-          baseLevels: depth + conditionalLayout.depth,
+          // A line comment occupies the same syntactic slot as the following
+          // field or clause. It must therefore retain continuation and match
+          // context, rather than using only raw brace depth.
+          baseLevels: normalIndentation,
           additiveLevels: 0,
           columnOffset: 0,
           kind: multilineComment ? "verbatim" : line.comments.length ? "comment" : "blank",
