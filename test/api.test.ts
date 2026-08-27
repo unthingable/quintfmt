@@ -54,6 +54,26 @@ test("aligns record values with strings and does not cap records by default", ()
   assert.match(result.formatted, /method:\s+"POST",/);
 });
 
+test("aligns map pairs and preserves nested call indentation", () => {
+  const source = `module Demo {
+  pure val BASE_PERMISSIONS = Map(
+    SuperAdmin -> Map(),
+    ResellerAdmin -> Map(
+      Buyers -> Set(Read),
+      Suppliers -> Set(Read),
+      Users -> Set(Read),
+    ),
+  )
+}
+`;
+  const result = format(source);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /SuperAdmin\s+-> Map\(\),\n\s+ResellerAdmin -> Map\(/);
+  assert.match(result.formatted, /\n\s{6}Buyers\s+-> Set\(Read\),\n\s{6}Suppliers\s+-> Set\(Read\),\n\s{6}Users\s+-> Set\(Read\),/);
+  assert.deepEqual(format(result.formatted), result);
+});
+
 test("keeps ordinary record fields aligned around a finite-cap outlier", () => {
   const source = `module Demo {\n  val request = {\n    id: value,\n    name: value,\n    extraordinarilyLongField: value,\n    kind: value,\n  }\n}\n`;
   const result = format(source, { recordMaxAlignmentPadding: 4 });
@@ -206,6 +226,29 @@ test("keeps a complete one-line match definition inline", () => {
   assert.deepEqual(format(result.formatted, { maxLineLength: 200 }), result);
 });
 
+test("indents structured match-arm RHS bodies as one CST-scoped frame", () => {
+  const source = `module Demo {
+  val result = match value {
+    | RemediationClone(value) =>
+      and {
+      value.source._1.in(s.surveys.keys()),
+      value.source._2.in(s.questions.keys()),
+    }
+    | Other =>
+      all {
+      value.ready,
+      value.valid,
+    }
+  }
+}
+`;
+  const result = format(source);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /\n      \| RemediationClone\(value\) =>\n        and \{\n          value\.source\._1\.in\(s\.surveys\.keys\(\)\),\n          value\.source\._2\.in\(s\.questions\.keys\(\)\),\n        \}\n      \| Other =>\n        all \{\n          value\.ready,\n          value\.valid,\n        \}/);
+  assert.deepEqual(format(result.formatted), result);
+});
+
 test("does not leak match-arm indentation through a verbatim comment body", () => {
   const source = `module Demo {\n  val choose = match value {\n    | Ready =>\n    /* keep */ true\n    | _ => false\n  }\n}\n`;
   const result = format(source);
@@ -229,7 +272,7 @@ test("keeps outer match layout state after a nested match closes", () => {
   const result = format(source, { maxLineLength: 200 });
   assert.equal(result.ok, true);
   if (!result.ok) return;
-  assert.match(result.formatted, /\n      inner\n      \| _ => false\n    }\n}/);
+  assert.match(result.formatted, /\n        inner\n      \| _ => false\n    }\n}/);
   assert.deepEqual(format(result.formatted, { maxLineLength: 200 }), result);
 });
 
@@ -392,7 +435,7 @@ test("keeps a multiline conditional expression inside its definition body", () =
   const result = format(source);
   assert.equal(result.ok, true);
   if (!result.ok) return;
-  assert.match(result.formatted, /: str =\n    if\(dispatch == 0\) \{\n      Contract\("approved"\)\n    \} else \{\n      Contract\("changed"\)\n    \}/);
+  assert.match(result.formatted, /: str =\n    if \(dispatch == 0\) \{\n      Contract\("approved"\)\n    \} else \{\n      Contract\("changed"\)\n    \}/);
   assert.deepEqual(format(result.formatted), result);
 });
 
@@ -403,11 +446,29 @@ test("keeps next-line and unbraced conditional branches inside their definition 
     const result = format(source);
     assert.equal(result.ok, true);
     if (!result.ok) continue;
-    assert.match(result.formatted, /: int =\n    if\(x > 0\)/);
+    assert.match(result.formatted, /: int =\n    if \(x > 0\)/);
     assert.match(result.formatted, /\n      (?:\{|x)/);
     assert.match(result.formatted, /\n    (?:\} )?else/);
     assert.deepEqual(format(result.formatted), result);
   }
+});
+
+test("spaces and wraps oversized inline conditionals in fold lambdas", () => {
+  const source = `module Demo {
+  pure def withoutEnvironmentalAnswer(s: State): State = {
+    ...s,
+    answers: s.answers.keys().fold(Map(), (answers, answer_key) =>
+    if(answer_key == (SurveyCurrent, QuestionEnvironmental)) answers else answers.put(answer_key, s.answers.get(answer_key))
+    ),
+  }
+}
+`;
+  const result = format(source);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /fold\(Map\(\), \(answers, answer_key\) =>\n    if \(answer_key == \(SurveyCurrent, QuestionEnvironmental\)\)\n      answers\n    else\n      answers\.put\(answer_key, s\.answers\.get\(answer_key\)\)/);
+  assert.ok(result.formatted.split("\n").every((line) => line.length <= 100));
+  assert.deepEqual(format(result.formatted), result);
 });
 
 test("keeps nested and match conditional branches at their CST-defined depth", () => {
@@ -417,7 +478,7 @@ test("keeps nested and match conditional branches at their CST-defined depth", (
     const result = format(source, { clauseAlignment: "full", maxLineLength: 55 });
     assert.equal(result.ok, true);
     if (!result.ok) continue;
-    assert.match(result.formatted, /\n      (?:if\(b\)|match value \{)/);
+    assert.match(result.formatted, /\n      (?:if \(b\)|match value \{)/);
     assert.deepEqual(format(result.formatted, { clauseAlignment: "full", maxLineLength: 55 }), result);
   }
 });
@@ -427,7 +488,7 @@ test("does not double-indent an inline structured conditional branch", () => {
   const result = format(source, { clauseAlignment: "full", maxLineLength: 55 });
   assert.equal(result.ok, true);
   if (!result.ok) return;
-  assert.match(result.formatted, /if\(a\) match value \{\n      \| Some\(v\)/);
+  assert.match(result.formatted, /if \(a\) match value \{\n      \| Some\(v\)/);
   assert.deepEqual(format(result.formatted, { clauseAlignment: "full", maxLineLength: 55 }), result);
 });
 
@@ -459,8 +520,8 @@ test("does not treat conditional comparisons or partial parentheses as physical 
   const comparisonResult = format(conditionalComparison, { clauseAlignment: "full" });
   const parenthesesResult = format(partialParentheses, { clauseAlignment: "full" });
   if (!comparisonResult.ok || !parenthesesResult.ok) return;
-  assert.match(comparisonResult.formatted, /=\n    if\(x > 0\) true\n      and b\n    else false/);
-  assert.match(parenthesesResult.formatted, /if\(a\) \(x \+\n      y\)/);
+  assert.match(comparisonResult.formatted, /=\n    if \(x > 0\) true\n      and b\n    else false/);
+  assert.match(parenthesesResult.formatted, /if \(a\) \(x \+\n      y\)/);
 });
 
 test("does not double-indent inline structured else branches", () => {
@@ -543,6 +604,31 @@ test("full clause alignment leaves a single match-arm comparison at its normal i
   assert.deepEqual(format(result.formatted, { clauseAlignment: "full" }), result);
 });
 
+test("offers block and compact layouts for multiline match-arm bodies", () => {
+  const source = `module Demo {
+  val permissions = match role {
+    | SuperAdmin => Set()
+    | ResellerAdmin => Set(
+      permission(Buyers, Read),
+      permission(Suppliers, Read),
+      permission(Users, Read),
+    )
+  }
+}
+`;
+  const block = format(source);
+  const compact = format(source, { matchArmBodies: "compact" });
+  assert.equal(block.ok, true);
+  assert.equal(compact.ok, true);
+  if (!block.ok || !compact.ok) return;
+  assert.match(block.formatted, /ResellerAdmin =>\n        Set\(/);
+  assert.match(block.formatted, /\n          permission\(Buyers, Read\),/);
+  assert.match(compact.formatted, /ResellerAdmin => Set\(/);
+  assert.doesNotMatch(compact.formatted, /ResellerAdmin =>\n/);
+  assert.deepEqual(format(block.formatted), block);
+  assert.deepEqual(format(compact.formatted, { matchArmBodies: "compact" }), compact);
+});
+
 test("full clause alignment includes the head after a multiline definition header", () => {
   const source = `module Demo {\n  pure def canAcceptAtE1(\n    committed: CommittedStage,\n    request: Request,\n  ): bool =\n    request.capability == committed.capability\n    and request.capability.stageId == committed.stageId\n    and request.capability.contractDigest == committed.contractDigest\n}\n`;
   const result = format(source, { clauseAlignment: "full" });
@@ -581,7 +667,7 @@ test("wraps the deepest oversized call in a multiline match arm", () => {
   const result = format(source, { maxLineLength: 80 });
   assert.equal(result.ok, true);
   if (!result.ok) return;
-  assert.match(result.formatted, /not\(state\.c1Grants\.contains\(c1GrantFor\(\n          worker,\n          observed\.stageId,\n          observed\.fence,\n          state\.authority\.liveSnapshot\n        \)\)\)/);
+  assert.match(result.formatted, /not\(state\.c1Grants\.contains\(c1GrantFor\(\n            worker,\n            observed\.stageId,\n            observed\.fence,\n            state\.authority\.liveSnapshot\n          \)\)\)/);
   assert.deepEqual(format(result.formatted, { maxLineLength: 80 }), result);
 });
 
@@ -601,7 +687,7 @@ test("preserves a chained dot-call receiver when wrapping its arguments", () => 
   assert.equal(result.ok, true);
   if (!result.ok) return;
   assert.match(result.formatted, /not\(factory\(worker\)\.make\(\n/);
-  assert.match(result.formatted, /state\.authority\.liveSnapshot\n        \)\)/);
+  assert.match(result.formatted, /state\.authority\.liveSnapshot\n          \)\)/);
   assert.deepEqual(format(result.formatted, { maxLineLength: 65 }), result);
 });
 
@@ -612,7 +698,7 @@ test("preserves parenthesized call arguments when wrapping", () => {
   if (!result.ok) return;
   assert.match(result.formatted, /factory\(worker\)\.make\(\n/);
   assert.match(result.formatted, /\(worker\),\n/);
-  assert.match(result.formatted, /\(observed\.fence\)\n        \)\)/);
+  assert.match(result.formatted, /\(observed\.fence\)\n          \)\)/);
   assert.deepEqual(format(result.formatted, { maxLineLength: 40 }), result);
 });
 
@@ -704,6 +790,70 @@ test("full clause alignment preserves lambda arrows in Boolean clauses", () => {
   if (!result.ok) return;
   assert.match(result.formatted, /acceptances\.exists\(acceptance => acceptance\.capabilityId == request\.capability\.id\)/);
   assert.deepEqual(format(result.formatted, { clauseAlignment: "full" }), result);
+});
+
+test("keeps nested Boolean blocks idempotent after continuation expressions", () => {
+  const source = `module Demo {
+  pure def hasPermission(s: State, user_id: UserId): bool =
+    or {
+    s.role_assignments.exists(assignment => and {
+      assignment.user_id == user_id,
+      assignment.role == SuperAdmin,
+    }),
+  }
+
+  pure def supplierWaiverAccepted(s: State, supplier_org_id: OrganizationId): bool =
+    s.waiver_acceptances.keys().exists(target => and {
+      supplierWaiverTargetMatches(target, supplier_org_id),
+      s.waiver_acceptances.get(target).status == Accepted,
+    })
+}
+`;
+  const result = format(source);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /\n    or \{\n      s\.role_assignments\.exists\(assignment => and \{\n        assignment\.user_id == user_id,/);
+  assert.deepEqual(format(result.formatted), result);
+});
+
+test("keeps a local binding's following Boolean block nested and idempotent", () => {
+  const source = `module Demo {
+  pure def hasScopedAnswers(s: State): bool = {
+    val answer_ids =
+      s.answers.keys().filter(answer_key => answer_key._1 == SurveyRemediation)
+    and {
+    answer_ids.size() > 0,
+    answer_ids.size() < 10,
+    }
+  }
+}
+`;
+  const result = format(source);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /\n    val answer_ids =\n      s\.answers\.keys\(\)\.filter\(answer_key => answer_key\._1 == SurveyRemediation\)\n      and \{\n        answer_ids\.size\(\) > 0,\n        answer_ids\.size\(\) < 10,\n      \}/);
+  assert.deepEqual(format(result.formatted), result);
+});
+
+test("indents Boolean call arguments inside fluent lambdas", () => {
+  const source = `module Demo {
+  pure def allScopedAnswersReviewed(s: State, survey_id: SurveyId): bool =
+    s.answers.keys()
+      .filter(answer_key => answer_key._1 == survey_id and answer_key._2.in(scopedQuestionIds(s, survey_id)))
+      .forall(answer_key =>
+        not(answerIsApplicable(s.answers.get(answer_key)))
+        or(
+        s.answer_reviews.keys().contains(answer_key)
+        and s.answer_reviews.get(answer_key).in(REVIEWED_ANSWER_STATUSES)
+        )
+      )
+}
+`;
+  const result = format(source);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.match(result.formatted, /not\(answerIsApplicable\(s\.answers\.get\(answer_key\)\)\)\n        or\(\n          s\.answer_reviews\.keys\(\)\.contains\(answer_key\)\n          and s\.answer_reviews\.get\(answer_key\)\.in\(REVIEWED_ANSWER_STATUSES\)\n        \)/);
+  assert.deepEqual(format(result.formatted), result);
 });
 
 test("offers independent record and clause alignment controls", () => {

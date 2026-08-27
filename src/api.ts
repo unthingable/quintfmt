@@ -11,6 +11,7 @@ export interface FormatOptions {
   declarationAlignment?: "types" | "columns" | "off";
   recordAlignment?: "local" | "off";
   clauseAlignment?: "off" | "operator" | "full";
+  matchArmBodies?: "compact" | "block";
   definitionSpacing?: "nontrivial" | "compact";
   blankLinePolicy?: "preserve" | "single";
   lineEnding?: "preserve" | "lf" | "crlf";
@@ -36,6 +37,7 @@ const defaultOptions: Required<FormatOptions> = {
   declarationAlignment: "types",
   recordAlignment: "local",
   clauseAlignment: "operator",
+  matchArmBodies: "block",
   definitionSpacing: "nontrivial",
   blankLinePolicy: "preserve",
   lineEnding: "preserve",
@@ -69,9 +71,22 @@ type LinePlan = {
   tokens: Token[];
   baseLevels: number;
   additiveLevels: number;
+  expressionContinuationLevels: number;
+  callContinuationLevels: number;
   columnOffset: number;
   kind: "verbatim" | "comment" | "blank" | "tokens";
   matchBodyIndex: number | null;
+};
+
+type MatchArmBodyLayout = {
+  arrowTokenIndex: number;
+  arrowLine: number;
+  expressionStartTokenIndex: number;
+  expressionStartLine: number;
+  expressionStopTokenIndex: number;
+  expressionStopLine: number;
+  needsBodyIndent: boolean;
+  canSplit: boolean;
 };
 
 function parse(source: string): { tokens: Token[]; diagnostics: Diagnostic[]; tree: ReturnType<QuintParser["modules"]> } {
@@ -142,7 +157,7 @@ function needsSpace(previous: string, current: string): boolean {
   if (previous === "...") return false;
   if (current === ":") return false;
   if (previous === ":" || previous === ",") return true;
-  if (current === "(") return !/^[A-Za-z_][A-Za-z0-9_]*$/.test(previous);
+  if (current === "(") return previous === "if" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(previous);
   if (current === "[") return false;
   if (current === "{") return true;
   if (previous === "{") return true;
@@ -281,6 +296,7 @@ function wrapLongDefinitionHeaders(
 }
 
 type CallWrap = { line: number; lines: string[]; depth: number };
+type ConditionalWrap = { line: number; lines: string[]; depth: number };
 
 function visitContexts(context: ParserRuleContext, visit: (context: ParserRuleContext) => void): void {
   visit(context);
@@ -376,6 +392,32 @@ function sumTypeFrames(tree: ParserRuleContext, tokens: Token[]): SumTypeFrame[]
   return frames;
 }
 
+function matchArmBodyLayouts(tree: ParserRuleContext, tokens: Token[]): MatchArmBodyLayout[] {
+  const layouts: MatchArmBodyLayout[] = [];
+  visitContexts(tree, (context) => {
+    if (!(context instanceof MatchSumCaseContext)) return;
+    const expression = context.expr();
+    if (!expression.start || !expression.stop || expression.start.line === undefined || expression.stop.line === undefined) return;
+    const arrow = defaultTokens(tokens, context.start.tokenIndex, expression.start.tokenIndex - 1)
+      .find((token) => token.text === "=>");
+    if (!arrow || expression.stop.line <= arrow.line) return;
+    const bodyTokens = tokens.slice(arrow.tokenIndex + 1, expression.stop.tokenIndex + 1);
+    layouts.push({
+      arrowTokenIndex: arrow.tokenIndex,
+      arrowLine: arrow.line,
+      expressionStartTokenIndex: expression.start.tokenIndex,
+      expressionStartLine: expression.start.line,
+      expressionStopTokenIndex: expression.stop.tokenIndex,
+      expressionStopLine: expression.stop.line,
+      needsBodyIndent: expression.stop.line > arrow.line,
+      // Comments still receive the CST-scoped indentation frame, but moving
+      // text across the arrow could violate the token-tape anchor.
+      canSplit: !bodyTokens.some(isComment),
+    });
+  });
+  return layouts;
+}
+
 function indexInside(index: number, start: number, stop: number): boolean {
   return index >= start && index <= stop;
 }
@@ -400,6 +442,7 @@ function plannedLevels(plan: LinePlan): number {
 }
 
 function fluentIndentation(plan: LinePlan, suffixes: FluentSuffix[], chains: FluentChain[]): number {
+  const continuationLevels = plan.callContinuationLevels;
   const tokens = plan.tokens.filter((token) => token.channel === Token.DEFAULT_CHANNEL);
   if (tokens.length) {
     const first = tokens[0]!.tokenIndex;
@@ -409,7 +452,7 @@ function fluentIndentation(plan: LinePlan, suffixes: FluentSuffix[], chains: Flu
         ? suffixTargetAt(first, [suffix], chains)
         : 0,
     ), 0);
-    return Math.max(plannedLevels(plan), target);
+    return Math.max(plannedLevels(plan), target + continuationLevels);
   }
   const first = plan.tokens[0]?.tokenIndex;
   if (first === undefined) return plannedLevels(plan);
@@ -421,7 +464,7 @@ function fluentIndentation(plan: LinePlan, suffixes: FluentSuffix[], chains: Flu
       target = Math.max(target, suffixTargetAt(first, [suffix], chains));
     }
   }
-  return Math.max(plannedLevels(plan), target);
+  return Math.max(plannedLevels(plan), target + continuationLevels);
 }
 
 function applySumTypeLayout(plans: LinePlan[], frames: SumTypeFrame[], full: boolean): void {
@@ -433,6 +476,21 @@ function applySumTypeLayout(plans: LinePlan[], frames: SumTypeFrame[], full: boo
       if (first.line === frame.firstVariantLine) plan.baseLevels = Math.max(0, plan.baseLevels - 1);
       plan.additiveLevels += 1;
       if (full && frame.unbarredVariantStarts.has(first.tokenIndex)) plan.columnOffset += 2;
+    }
+  }
+}
+
+function applyMatchArmBodyLayout(plans: LinePlan[], layouts: MatchArmBodyLayout[]): void {
+  for (const plan of plans) {
+    const first = plan.tokens[0];
+    if (!first) continue;
+    for (const layout of layouts) {
+      if (!layout.needsBodyIndent
+        || plan.expressionContinuationLevels > 0
+        || first.line <= layout.arrowLine
+        || first.line > layout.expressionStopLine
+        || !indexInside(first.tokenIndex, layout.expressionStartTokenIndex, layout.expressionStopTokenIndex)) continue;
+      plan.additiveLevels += 1;
     }
   }
 }
@@ -588,6 +646,67 @@ function wrapOversizedMatchCalls(
   return { lines: wrappedLines, barriers: wrappedBarriers, changed: selected.size > 0 };
 }
 
+function wrapOversizedInlineConditionals(
+  lines: string[],
+  barriers: boolean[],
+  indentWidth: number,
+  maximumLength: number,
+): { lines: string[]; barriers: boolean[]; changed: boolean } {
+  const source = `${lines.join("\n")}\n`;
+  const parsed = parse(source);
+  if (parsed.diagnostics.length) return { lines, barriers, changed: false };
+  const candidates: ConditionalWrap[] = [];
+  visitContexts(parsed.tree, (context) => {
+    if (!(context instanceof IfElseContext) || !context.stop || context.start.line !== context.stop.line) return;
+    const line = context.start.line - 1;
+    const text = lines[line];
+    if (text === undefined || text.length <= maximumLength || barriers[line]) return;
+    const indentation = text.match(/^\s*/)?.[0] ?? "";
+    if (context.start.charPositionInLine !== indentation.length) return;
+    const lineTokens = parsed.tokens.filter((token) => token.channel === Token.DEFAULT_CHANNEL && token.line === context.start.line);
+    if (lineTokens.at(-1)?.tokenIndex !== context.stop.tokenIndex) return;
+    const expressions = context.expr();
+    if (expressions.length !== 3 || expressions.some((expression) => !expression.start || !expression.stop)) return;
+    const conditionalTokens = parsed.tokens.slice(context.start.tokenIndex, context.stop.tokenIndex + 1);
+    if (conditionalTokens.some(isComment)) return;
+    const condition = renderTokens(defaultTokens(parsed.tokens, expressions[0]!.start.tokenIndex, expressions[0]!.stop!.tokenIndex));
+    const thenBranch = renderTokens(defaultTokens(parsed.tokens, expressions[1]!.start.tokenIndex, expressions[1]!.stop!.tokenIndex));
+    const elseBranch = renderTokens(defaultTokens(parsed.tokens, expressions[2]!.start.tokenIndex, expressions[2]!.stop!.tokenIndex));
+    const branchIndentation = `${indentation}${" ".repeat(indentWidth)}`;
+    candidates.push({
+      line,
+      depth: context.stop.tokenIndex - context.start.tokenIndex,
+      lines: [
+        `${indentation}if (${condition})`,
+        `${branchIndentation}${thenBranch}`,
+        `${indentation}else`,
+        `${branchIndentation}${elseBranch}`,
+      ],
+    });
+  });
+  const selected = new Map<number, ConditionalWrap>();
+  for (const candidate of candidates) {
+    const current = selected.get(candidate.line);
+    if (!current || candidate.depth > current.depth) selected.set(candidate.line, candidate);
+  }
+  if (!selected.size) return { lines, barriers, changed: false };
+  const wrappedLines: string[] = [];
+  const wrappedBarriers: boolean[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const candidate = selected.get(index);
+    if (!candidate) {
+      wrappedLines.push(lines[index]!);
+      wrappedBarriers.push(barriers[index] ?? false);
+      continue;
+    }
+    candidate.lines.forEach((line, replacementIndex) => {
+      wrappedLines.push(line);
+      wrappedBarriers.push(replacementIndex === 0 ? (barriers[index] ?? false) : true);
+    });
+  }
+  return { lines: wrappedLines, barriers: wrappedBarriers, changed: true };
+}
+
 function indentMultilineMatchCallArguments(lines: string[], indentWidth: number, clauseAlignment: Required<FormatOptions>["clauseAlignment"]): string[] {
   if (clauseAlignment !== "full") return lines;
   const source = `${lines.join("\n")}\n`;
@@ -667,6 +786,24 @@ function alignRecordFields(
   });
 }
 
+function alignMapEntries(
+  pairs: RegExpExecArray[],
+  maximumPadding: Required<FormatOptions>["recordMaxAlignmentPadding"],
+): string[] {
+  const heads = pairs.map((pair) => pair[1]!);
+  const widest = Math.max(...heads.map((head) => head.length));
+  const narrowest = Math.min(...heads.map((head) => head.length));
+  if (maximumPadding === "unlimited" || widest - narrowest <= maximumPadding) {
+    return pairs.map((pair, index) => `${heads[index]!.padEnd(widest)} -> ${pair[2]}`);
+  }
+
+  const target = Math.max(...heads.filter((head) => head.length - narrowest <= maximumPadding).map((head) => head.length));
+  return pairs.map((pair, index) => {
+    const head = heads[index]!;
+    return `${head.length <= target ? head.padEnd(target) : head} -> ${pair[2]}`;
+  });
+}
+
 function alignLocal(
   lines: string[],
   maximumPadding: number,
@@ -678,6 +815,10 @@ function alignLocal(
   if (lines.length < 2) return lines;
   const declarations = alignDeclarations(lines, maximumPadding, declarationAlignment);
   if (declarations !== lines) return declarations;
+  const pairs = lines.map((line) => /^(.+?)\s*->\s*(.+)$/.exec(line));
+  if (recordAlignment === "local" && pairs.every(Boolean)) {
+    return alignMapEntries(pairs as RegExpExecArray[], recordMaximumPadding);
+  }
   const records = lines.map((line) => /^([A-Za-z_][\w]*)\s*:\s*(.+,?)$/.exec(line));
   if (recordAlignment === "local" && records.every(Boolean)) {
     return alignRecordFields(records as RegExpExecArray[], recordMaximumPadding);
@@ -691,7 +832,7 @@ function alignmentKind(
   line: string,
   recordAlignment: Required<FormatOptions>["recordAlignment"],
   clauseAlignment: Required<FormatOptions>["clauseAlignment"],
-): "declaration" | "record" | "comparison" | "assignment" | null {
+): "declaration" | "record" | "pair" | "comparison" | "assignment" | null {
   const trimmed = line.trimStart();
   // A match arm's `=>` is not a relation. Treating its `=` as one rewrites the
   // arrow to `= >` during table alignment and makes otherwise valid Quint fail
@@ -701,6 +842,7 @@ function alignmentKind(
   if (recordAlignment === "local" && /^[A-Za-z_][\w]*\s*:/.test(trimmed)) return "record";
   if (containsStringLiteral(trimmed)) return null;
   if (/^(?:pure\s+)?(?:val|def)|^(?:action|temporal|nondet|type|module)\b/.test(trimmed)) return null;
+  if (recordAlignment === "local" && /^.+?\s*->\s*.+$/.test(trimmed)) return "pair";
   if (clauseAlignment !== "off" && /^.+?\s*(==|!=|<=|>=|<|>)\s*.+$/.test(trimmed)) return "comparison";
   if (clauseAlignment !== "off" && /^.+?\s*=\s*.+$/.test(trimmed)) return "assignment";
   return null;
@@ -763,6 +905,8 @@ function expandBooleanDefinitionChains(
 ): { lines: string[]; barriers: boolean[] } {
   const expanded = [...lines];
   const expandedBarriers = [...barriers];
+  const isBooleanBlock = (line: string | undefined): boolean =>
+    line !== undefined && /^\s*(?:and|or)\s*\{/.test(line);
   for (let index = 0; index + 1 < expanded.length; index += 1) {
     if (expandedBarriers[index] || expandedBarriers[index + 1]) continue;
     const definition = /^\s*(?:pure\s+)?(?:val|def)\b/.test(expanded[index]!);
@@ -773,15 +917,18 @@ function expandBooleanDefinitionChains(
       && !expandedBarriers[index + 2]
       && !/^\s*if\b/.test(expanded[index + 1]!)
       && /^\s*(?!and\b|or\b).+?\s*(==|!=|<=|>=|<|>)\s*.+$/.test(expanded[index + 1]!)
-      && /^\s*(?:and|or)\b/.test(expanded[index + 2]!);
+      && /^\s*(?:and|or)\b/.test(expanded[index + 2]!)
+      && !isBooleanBlock(expanded[index + 2]);
     if (!definition && !(clauseAlignment === "full" && matchArm) && !fullChainHeader) continue;
-    const inline = /^\s*(?:and|or)\b/.test(expanded[index + 1]!);
+    const inline = /^\s*(?:and|or)\b/.test(expanded[index + 1]!)
+      && !isBooleanBlock(expanded[index + 1]);
     const expandedChain = definition
       && /=\s*$/.test(expanded[index]!)
       && index + 2 < expanded.length
       && !expandedBarriers[index + 2]
       && !/^\s*if\b/.test(expanded[index + 1]!)
-      && /^\s*(?:and|or)\b/.test(expanded[index + 2]!);
+      && /^\s*(?:and|or)\b/.test(expanded[index + 2]!)
+      && !isBooleanBlock(expanded[index + 2]);
     const matchArmChain = matchArm
       && index + 2 < expanded.length
       && !expandedBarriers[index + 2]
@@ -804,7 +951,12 @@ function expandBooleanDefinitionChains(
       expanded[firstIndex] = `${firstIndent}${expanded[firstIndex]!.trimStart()}`;
     }
     index = firstIndex;
-    while (index + 1 < expanded.length && !expandedBarriers[index + 1] && /^\s*(?:and|or)\b/.test(expanded[index + 1]!)) {
+    while (
+      index + 1 < expanded.length
+      && !expandedBarriers[index + 1]
+      && /^\s*(?:and|or)\b/.test(expanded[index + 1]!)
+      && !isBooleanBlock(expanded[index + 1])
+    ) {
       expanded[index + 1] = `${logicalIndent}${expanded[index + 1]!.trimStart()}`;
       index += 1;
     }
@@ -903,7 +1055,7 @@ function separateNontrivialDefinitions(lines: string[]): string[] {
 
 function alignmentWidths(
   lines: string[],
-  kind: "declaration" | "record" | "comparison" | "assignment",
+  kind: "declaration" | "record" | "pair" | "comparison" | "assignment",
   declarationAlignment: Required<FormatOptions>["declarationAlignment"],
 ): number[] | null {
   const content = lines.map((line) => line.trimStart());
@@ -924,14 +1076,14 @@ function alignmentWidths(
 
 function alignWithinPadding(
   island: string[],
-  kind: "declaration" | "record" | "comparison" | "assignment",
+  kind: "declaration" | "record" | "pair" | "comparison" | "assignment",
   maximumPadding: number,
   recordMaximumPadding: Required<FormatOptions>["recordMaxAlignmentPadding"],
   declarationAlignment: Required<FormatOptions>["declarationAlignment"],
   recordAlignment: Required<FormatOptions>["recordAlignment"],
   clauseAlignment: Required<FormatOptions>["clauseAlignment"],
 ): string[] {
-  if (kind === "record") {
+  if (kind === "record" || kind === "pair") {
     const prefixes = island.map((line) => line.match(/^\s*/)?.[0] ?? "");
     return alignLocal(island.map((line) => line.trimStart()), maximumPadding, recordMaximumPadding, declarationAlignment, recordAlignment, clauseAlignment)
       .map((line, index) => `${prefixes[index]}${line}`);
@@ -991,16 +1143,20 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
     const lines = makeLines(source, parsed.tokens);
     const conditionals = conditionalFrames(parsed.tree, parsed.tokens);
     const fluent = fluentContinuations(parsed.tree, parsed.tokens);
+    const fluentCallOpeners = new Set(fluent.suffixes
+      .map((suffix) => suffix.openParen)
+      .filter((index): index is number => index !== undefined));
     const sumTypes = sumTypeFrames(parsed.tree, parsed.tokens);
+    const matchArmLayouts = matchArmBodyLayouts(parsed.tree, parsed.tokens);
     const plans: LinePlan[] = [];
     let depth = 0;
     let continuation = false;
     let definitionParameterDepth = 0;
     let callContinuationDepth = 0;
+    let callContinuationOpeners: number[] = [];
     const matchBodyBraceDepths: number[] = [];
     const continuationBlockBraceDepths: number[] = [];
     let pendingMatchBody = false;
-    let pendingMatchArmBody = false;
     const updateDefinitionParameterDepth = (tokens: Token[]) => {
       if (definitionParameterDepth > 0) {
         definitionParameterDepth = Math.max(0, definitionParameterDepth + parenthesisDelta(tokens));
@@ -1011,8 +1167,14 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
     const updateCallContinuationDepth = (tokens: Token[]) => {
       if (callContinuationDepth > 0) {
         callContinuationDepth = Math.max(0, callContinuationDepth + parenthesisDelta(tokens));
+        for (const token of tokens) {
+          if (token.text === "(") callContinuationOpeners.push(token.tokenIndex);
+          else if (token.text === ")") callContinuationOpeners.pop();
+        }
+        if (callContinuationDepth === 0) callContinuationOpeners = [];
       } else if (!opensDefinitionParameters(tokens) && tokens.at(-1)?.text === "(") {
         callContinuationDepth = 1;
+        callContinuationOpeners = [tokens.at(-1)!.tokenIndex];
       }
     };
     const updateMatchBodyBraceDepth = (tokens: Token[], openedAt: number | null = null) => {
@@ -1061,7 +1223,6 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
       updateCallContinuationDepth(tokens);
       updateMatchBodyBraceDepth(tokens, openedAt);
       updateContinuationBlockBraceDepth(tokens, continuationOpenedAt);
-      pendingMatchArmBody = tokens[0]?.text === "|" && tokens.at(-1)?.text === "=>";
       pendingMatchBody = tokens.at(-1)?.text === "=";
     };
     for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
@@ -1075,9 +1236,19 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
       const closesCall = callContinuationDepth > 0 && line.tokens[0]?.text === ")";
       const beginsNestedMatchBody = beginsPendingMatchBody && matchBodyBraceDepths.length > 0;
       const structuralBase = lineDepth + matchBodyBraceDepths.length + continuationBlockBraceDepths.length;
-      const normalIndentation = structuralBase + conditionalLayout.depth + (beginsNestedMatchBody ? 1 : 0) + (pendingMatchArmBody ? 1 : 0) + (((continuation && !conditionalLayout.definitionStart && !conditionalLayout.branchIndent) && !startsClose(line.tokens)) || (definitionParameterDepth > 0 && !closesParameters) || (callContinuationDepth > 0 && !closesCall) ? 1 : 0);
+      const callIndentation = callContinuationDepth > 0
+        ? Math.max(0, callContinuationDepth - (closesCall ? 1 : 0))
+        : 0;
+      const activeCallOpeners = line.tokens[0]?.text === ")"
+        ? callContinuationOpeners.slice(0, -1)
+        : callContinuationOpeners;
+      const callContinuationLevels = activeCallOpeners.filter((index) => !fluentCallOpeners.has(index)).length;
+      const expressionContinuationLevels = ((continuation && !conditionalLayout.definitionStart && !conditionalLayout.branchIndent) && !startsClose(line.tokens) ? 1 : 0)
+        + (definitionParameterDepth > 0 && !closesParameters ? 1 : 0);
+      const inheritedContinuationLevels = expressionContinuationLevels + callIndentation;
+      const normalIndentation = structuralBase + conditionalLayout.depth + (beginsNestedMatchBody ? 1 : 0) + inheritedContinuationLevels;
       if (line.verbatim) {
-        plans.push({ line, tokens: layoutTokens, baseLevels: normalIndentation, additiveLevels: 0, columnOffset: 0, kind: "verbatim", matchBodyIndex: null });
+        plans.push({ line, tokens: layoutTokens, baseLevels: normalIndentation, additiveLevels: 0, expressionContinuationLevels, callContinuationLevels, columnOffset: 0, kind: "verbatim", matchBodyIndex: null });
         advanceBraceDepth(line.tokens);
         advanceLayoutState(line.tokens, beginsPendingMatchBody ? 0 : null, beginsContinuationBlock ? 0 : null);
         continue;
@@ -1092,6 +1263,8 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
           // context, rather than using only raw brace depth.
           baseLevels: normalIndentation,
           additiveLevels: 0,
+          expressionContinuationLevels,
+          callContinuationLevels,
           columnOffset: 0,
           kind: multilineComment ? "verbatim" : line.comments.length ? "comment" : "blank",
           matchBodyIndex: null,
@@ -1101,37 +1274,44 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
         continue;
       }
       if (line.comments.some((comment) => comment.type === QuintLexer.COMMENT && (comment.text ?? "").includes("\n"))) {
-        plans.push({ line, tokens: layoutTokens, baseLevels: 0, additiveLevels: 0, columnOffset: 0, kind: "verbatim", matchBodyIndex: null });
+        plans.push({ line, tokens: layoutTokens, baseLevels: 0, additiveLevels: 0, expressionContinuationLevels, callContinuationLevels, columnOffset: 0, kind: "verbatim", matchBodyIndex: null });
         advanceBraceDepth(line.tokens);
         advanceLayoutState(line.tokens, beginsPendingMatchBody ? 0 : null, beginsContinuationBlock ? 0 : null);
         continue;
       }
       if (line.tokens[0]?.type === QuintLexer.HASHBANG_LINE) {
-        plans.push({ line, tokens: layoutTokens, baseLevels: 0, additiveLevels: 0, columnOffset: 0, kind: "verbatim", matchBodyIndex: null });
+        plans.push({ line, tokens: layoutTokens, baseLevels: 0, additiveLevels: 0, expressionContinuationLevels, callContinuationLevels, columnOffset: 0, kind: "verbatim", matchBodyIndex: null });
         advanceBraceDepth(line.tokens);
         advanceLayoutState(line.tokens, beginsPendingMatchBody ? 0 : null, beginsContinuationBlock ? 0 : null);
         continue;
       }
       if (line.tokens.length === 1 && line.tokens[0]?.type === QuintLexer.DOCCOMMENT) {
-        plans.push({ line, tokens: layoutTokens, baseLevels: 0, additiveLevels: 0, columnOffset: 0, kind: "verbatim", matchBodyIndex: null });
+        plans.push({ line, tokens: layoutTokens, baseLevels: 0, additiveLevels: 0, expressionContinuationLevels, callContinuationLevels, columnOffset: 0, kind: "verbatim", matchBodyIndex: null });
         advanceBraceDepth(line.tokens);
         advanceLayoutState(line.tokens, beginsPendingMatchBody ? 0 : null, beginsContinuationBlock ? 0 : null);
         continue;
       }
       depth = lineDepth;
       const matchBodyIndex = line.comments.length ? null : definitionMatchBodyIndex(line.tokens);
-      plans.push({ line, tokens: line.tokens, baseLevels: normalIndentation, additiveLevels: 0, columnOffset: 0, kind: "tokens", matchBodyIndex });
+      plans.push({ line, tokens: line.tokens, baseLevels: normalIndentation, additiveLevels: 0, expressionContinuationLevels, callContinuationLevels, columnOffset: 0, kind: "tokens", matchBodyIndex });
       depth = Math.max(0, depth + braceDelta(line.tokens) + (startsClose(line.tokens) ? 1 : 0));
       advanceLayoutState(line.tokens, matchBodyIndex ?? (beginsPendingMatchBody ? 0 : null), beginsContinuationBlock ? 0 : null);
       const nextFirstToken = lines[lineIndex + 1]?.tokens[0]?.text;
       continuation = line.tokens.at(-1)?.text === "="
         || (continuation && (nextFirstToken === "and" || nextFirstToken === "or"));
     }
+    applyMatchArmBodyLayout(plans, matchArmLayouts);
     applySumTypeLayout(plans, sumTypes, settings.alignment === "local" && settings.clauseAlignment === "full");
     for (const chain of [...fluent.chains].sort((left, right) => (right.stop - right.start) - (left.stop - left.start))) {
       const rootPlan = plans.find((plan) => plan.tokens.some((token) => token.tokenIndex === chain.rootStop));
       const rootIndentation = rootPlan ? fluentIndentation(rootPlan, fluent.suffixes, fluent.chains) : 0;
-      chain.hang = rootIndentation + 1;
+      const rootIsAlreadyInMatchArmBody = rootPlan?.tokens.some((token) => matchArmLayouts.some((layout) =>
+        token.line > layout.arrowLine
+        && indexInside(token.tokenIndex, layout.expressionStartTokenIndex, layout.expressionStopTokenIndex))) ?? false;
+      // A root that is already on a later line in a match-arm RHS has the
+      // CST-scoped arm frame in its planned indentation. Other roots still
+      // receive the normal one-level fluent suffix hang.
+      chain.hang = rootIndentation + (rootIsAlreadyInMatchArmBody ? 0 : 1);
     }
     const rendered: string[] = [];
     const barriers: boolean[] = [];
@@ -1147,12 +1327,27 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
         barriers.push(line.barrier || Boolean(line.source.trim()));
         continue;
       }
+      const armBody = settings.matchArmBodies === "block"
+        ? matchArmLayouts.find((layout) => layout.expressionStartLine === layout.arrowLine
+          && layout.canSplit
+          && plan.tokens.some((token) => token.tokenIndex === layout.arrowTokenIndex))
+        : undefined;
       const indentation = fluentIndentation(plan, fluent.suffixes, fluent.chains);
       const indentationColumns = indentation * settings.indentWidth + plan.columnOffset;
       if (plan.kind === "comment") {
         rendered.push(`${" ".repeat(indentationColumns)}${line.source.trimStart()}`);
         barriers.push(line.barrier || Boolean(line.source.trim()));
         continue;
+      }
+      if (armBody) {
+        const arrowIndex = line.tokens.findIndex((token) => token.tokenIndex === armBody.arrowTokenIndex);
+        if (arrowIndex >= 0 && arrowIndex + 1 < line.tokens.length) {
+          rendered.push(`${" ".repeat(indentationColumns)}${renderTokens(line.tokens.slice(0, arrowIndex + 1))}`.trimEnd());
+          barriers.push(false);
+          rendered.push(`${" ".repeat((indentation + 1) * settings.indentWidth)}${renderTokens(line.tokens.slice(arrowIndex + 1))}`);
+          barriers.push(line.barrier);
+          continue;
+        }
       }
       if (plan.matchBodyIndex !== null) {
         rendered.push(`${" ".repeat(indentationColumns)}${renderTokens(line.tokens.slice(0, plan.matchBodyIndex))}`.trimEnd());
@@ -1205,14 +1400,20 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
     };
     let layout = { lines: expandedBooleanChains.lines, barriers: expandedBooleanChains.barriers };
     for (let pass = 0; pass < 4; pass += 1) {
-      const wrappedCalls = wrapOversizedMatchCalls(
+      const wrappedConditionals = wrapOversizedInlineConditionals(
         layout.lines,
         layout.barriers,
         settings.indentWidth,
         settings.maxLineLength,
       );
+      const wrappedCalls = wrapOversizedMatchCalls(
+        wrappedConditionals.lines,
+        wrappedConditionals.barriers,
+        settings.indentWidth,
+        settings.maxLineLength,
+      );
       layout = alignLayout(wrappedCalls);
-      if (pass > 0 && !wrappedCalls.changed) break;
+      if (pass > 0 && !wrappedConditionals.changed && !wrappedCalls.changed) break;
     }
     const fullChains = indentMultilineMatchCallArguments(layout.lines, settings.indentWidth, settings.clauseAlignment);
     const spaced = settings.definitionSpacing === "nontrivial"

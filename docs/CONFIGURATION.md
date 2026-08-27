@@ -22,6 +22,7 @@ invocation. Use `--config path/to/file` to select a file explicitly, or
 ```hocon
 indentWidth = 2
 maxLineLength = 100
+matchArmBodies = block
 
 alignment {
   mode = local
@@ -65,6 +66,7 @@ format(source, {
   definitionSpacing: "nontrivial",
   recordAlignment: "local",
   clauseAlignment: "operator",
+  matchArmBodies: "block",
   blankLinePolicy: "preserve",
   lineEnding: "preserve",
 })
@@ -73,11 +75,12 @@ format(source, {
 | Option | Values | Default | Meaning |
 | --- | --- | --- | --- |
 | `indentWidth` | positive integer | `2` | Spaces used for block indentation. |
-| `maxLineLength` | positive integer | `100` | Target width for supported wrapping. Long definition parameter lists and comment-free multi-argument calls in multiline match arms wrap one item per line. Indivisible tokens and expressions may exceed it. |
+| `maxLineLength` | positive integer | `100` | Target width for supported wrapping. Long definition parameter lists, comment-free multi-argument calls in multiline match arms, and eligible oversized inline conditionals wrap into multiple lines. Indivisible tokens and unsupported expression shapes may exceed it. |
+| `matchArmBodies` | `compact`, `block` | `block` | Controls inline match arms whose right-hand expression is already multiline. `block` breaks after `=>` and indents the expression as the arm body; `compact` keeps the expression attached to `=>`. Explicitly broken arms remain broken in either mode. |
 | `alignment` | `local`, `off` | `local` | Enables or disables all local alignment. |
 | `declarationAlignment` | `types`, `columns`, `off` | `types` | Controls alignment within consecutive `const`/`var` groups. |
-| `recordAlignment` | `local`, `off` | `local` | Controls local alignment of record fields and values. |
-| `recordMaxAlignmentPadding` | positive integer, `unlimited` | `unlimited` | Maximum record-field padding. With a finite cap, oversize labels extend right while the ordinary fields stay aligned. |
+| `recordAlignment` | `local`, `off` | `local` | Controls local alignment of record fields, values, and map entries. |
+| `recordMaxAlignmentPadding` | positive integer, `unlimited` | `unlimited` | Maximum record-field and map-entry padding. With a finite cap, oversize labels extend right while the ordinary rows stay aligned. |
 | `clauseAlignment` | `off`, `operator`, `full` | `operator` | Controls layout and alignment of compatible action and Boolean clauses. `full` also aligns an unbarred first multiline sum-type variant with its `|`-prefixed siblings. |
 | `maxAlignmentPadding` | positive integer | `16` | Maximum spaces added before a column. The formatter splits a local group rather than creating an excessive gap. |
 | `definitionSpacing` | `nontrivial`, `compact` | `nontrivial` | Adds one blank line after a comment-led, trailing-comment, or multiline module-level definition. |
@@ -89,6 +92,7 @@ The CLI currently exposes declaration alignment:
 ```sh
 quintfmt --declaration-alignment types Spec.qnt
 quintfmt --max-line-length 100 Spec.qnt
+quintfmt --match-arm-bodies block Spec.qnt
 quintfmt --declaration-alignment columns Spec.qnt
 quintfmt --declaration-alignment off Spec.qnt
 quintfmt --definition-spacing compact Spec.qnt
@@ -132,8 +136,8 @@ Alignment is local. It never crosses a blank line, comment, different
 indentation level, or nested layout. Declaration and `operator` clause rows
 split at the configured generic padding cap. `full` aligns an entire compatible
 Boolean chain, including its head. Records default to unlimited alignment; with
-a finite record cap, long labels extend right while the remaining fields retain
-a shared value column.
+a finite record cap, long labels extend right while the remaining fields and map
+entries retain a shared value column.
 
 ## Clause alignment
 

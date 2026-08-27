@@ -5,7 +5,7 @@ import type { FormatOptions } from "./api.js";
 export class ConfigError extends Error {}
 
 const configurationKeys = new Set([
-  "indentWidth", "maxLineLength", "alignment.mode", "alignment.maxPadding", "alignment.records", "alignment.recordMaxPadding", "alignment.clauses",
+  "indentWidth", "maxLineLength", "matchArmBodies", "alignment.mode", "alignment.maxPadding", "alignment.records", "alignment.recordMaxPadding", "alignment.clauses",
   "declarations.alignment", "definitions.spacing", "blankLines.policy", "lineEnding",
 ]);
 
@@ -48,6 +48,11 @@ export function parseConfig(source: string, label = ".quintfmt.conf"): FormatOpt
   const options: FormatOptions = {};
   if (value.has("indentWidth")) options.indentWidth = positiveInteger(Number(value.get("indentWidth")), "indentWidth");
   if (value.has("maxLineLength")) options.maxLineLength = positiveInteger(Number(value.get("maxLineLength")), "maxLineLength");
+  if (value.has("matchArmBodies")) {
+    const mode = value.get("matchArmBodies");
+    if (mode !== "compact" && mode !== "block") throw new ConfigError("matchArmBodies must be compact or block");
+    options.matchArmBodies = mode;
+  }
   if (value.has("alignment.maxPadding")) options.maxAlignmentPadding = positiveInteger(Number(value.get("alignment.maxPadding")), "alignment.maxPadding");
   if (value.has("alignment.recordMaxPadding")) {
     const padding = value.get("alignment.recordMaxPadding");

@@ -70,12 +70,32 @@ test("formats named files in place by default and supports --stdout", async () =
   assert.match(await readFile(file, "utf8"), /var x: int/);
 });
 
+test("passes match-arm body layout through the CLI", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "quintfmt-cli-"));
+  const file = join(directory, "Demo.qnt");
+  await writeFile(file, `module Demo {
+  val permissions = match role {
+    | SuperAdmin => Set()
+    | ResellerAdmin => Set(
+      1,
+      2,
+    )
+  }
+}
+`, "utf8");
+  const result = spawnSync(process.execPath, [cli, "--stdout", "--match-arm-bodies", "compact", file], { encoding: "utf8" });
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /ResellerAdmin => Set\(/);
+  assert.doesNotMatch(result.stdout, /ResellerAdmin =>\n/);
+});
+
 test("reports help and the package version", () => {
   const help = spawnSync(process.execPath, [cli, "--help"], { encoding: "utf8" });
   const version = spawnSync(process.execPath, [cli, "--version"], { encoding: "utf8" });
   assert.equal(help.status, 0);
   assert.match(help.stdout, /Named files are formatted in place by default/);
   assert.match(help.stdout, /--max-line-length <columns>/);
+  assert.match(help.stdout, /--match-arm-bodies <mode>/);
   assert.doesNotMatch(help.stdout, /\\n/);
   assert.equal(version.status, 0);
   assert.equal(version.stdout, `${packageVersion}\n`);
