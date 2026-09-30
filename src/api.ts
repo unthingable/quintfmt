@@ -1,6 +1,6 @@
 import { CharStreams, CommonTokenStream, ParserRuleContext, Token } from "antlr4ts";
 import { QuintLexer } from "./generated/vendor/quint/QuintLexer.js";
-import { DotCallContext, IfElseContext, MatchContext, MatchSumCaseContext, OperAppContext, QuintParser, TypeSumDefContext } from "./generated/vendor/quint/QuintParser.js";
+import { ActionAnyContext, DotCallContext, IfElseContext, MatchContext, MatchSumCaseContext, OperAppContext, OrExprContext, QuintParser, TypeSumDefContext } from "./generated/vendor/quint/QuintParser.js";
 
 export interface FormatOptions {
   indentWidth?: number;
@@ -392,6 +392,67 @@ function sumTypeFrames(tree: ParserRuleContext, tokens: Token[]): SumTypeFrame[]
   return frames;
 }
 
+function expandFullAlternatives(source: string, tree: ParserRuleContext, tokens: Token[], maximumLineLength: number): string {
+  const breaks = new Set<number>();
+  const sourceLines = source.split(/\r?\n/);
+  const sourceOffsets = [0];
+  for (const character of source) sourceOffsets.push(sourceOffsets.at(-1)! + character.length);
+  const addBreakBefore = (token: Token, previous: Token | undefined) => {
+    if (previous && previous.line === token.line) breaks.add(token.startIndex);
+  };
+  const addBreakAfter = (token: Token, next: Token | undefined) => {
+    if (next && next.line === token.line) breaks.add(token.stopIndex + 1);
+  };
+
+  visitContexts(tree, (context) => {
+    if (context instanceof TypeSumDefContext) {
+      const variants = context.sumTypeDefinition().typeSumVariant();
+      if (variants.length < 2
+        || context.start.line !== context.stop?.line
+        || (sourceLines[context.start.line - 1]?.length ?? 0) <= maximumLineLength
+        || tokens.slice(context.start.tokenIndex, context.stop!.tokenIndex + 1).some(isComment)) return;
+      const header = context.ASGN().symbol;
+      const firstVariant = variants[0]!;
+      const firstPrefix = defaultTokens(tokens, header.tokenIndex + 1, firstVariant.start.tokenIndex - 1);
+      addBreakBefore(firstPrefix.at(-1)?.text === "|" ? firstPrefix.at(-1)! : firstVariant.start, header);
+      for (let index = 1; index < variants.length; index += 1) {
+        const previous = variants[index - 1]!;
+        const variant = variants[index]!;
+        const bar = defaultTokens(tokens, previous.stop!.tokenIndex + 1, variant.start.tokenIndex - 1)
+          .find((token) => token.text === "|");
+        if (bar) addBreakBefore(bar, previous.stop);
+      }
+      return;
+    }
+
+    if (!(context instanceof ActionAnyContext || context instanceof OrExprContext)) return;
+    const alternatives = context.expr();
+    if (alternatives.length < 2 || tokens.slice(context.start.tokenIndex, context.stop!.tokenIndex + 1).some(isComment)) return;
+    const first = alternatives[0]!;
+    const open = defaultTokens(tokens, context.start.tokenIndex, first.start.tokenIndex - 1).find((token) => token.text === "{");
+    const close = defaultTokens(tokens, alternatives.at(-1)!.stop!.tokenIndex + 1, context.stop!.tokenIndex)
+      .filter((token) => token.text === "}").at(-1);
+    if (!open || !close) return;
+    addBreakAfter(open, first.start);
+    for (let index = 1; index < alternatives.length; index += 1) {
+      const previous = alternatives[index - 1]!;
+      const alternative = alternatives[index]!;
+      const comma = defaultTokens(tokens, previous.stop!.tokenIndex + 1, alternative.start.tokenIndex - 1)
+        .find((token) => token.text === ",");
+      if (comma) addBreakAfter(comma, alternative.start);
+    }
+    addBreakBefore(close, alternatives.at(-1)!.stop);
+  });
+
+  if (breaks.size === 0) return source;
+  let expanded = source;
+  for (const codePointOffset of [...breaks].sort((left, right) => right - left)) {
+    const offset = sourceOffsets[codePointOffset] ?? source.length;
+    expanded = `${expanded.slice(0, offset)}\n${expanded.slice(offset)}`;
+  }
+  return expanded;
+}
+
 function matchArmBodyLayouts(tree: ParserRuleContext, tokens: Token[]): MatchArmBodyLayout[] {
   const layouts: MatchArmBodyLayout[] = [];
   visitContexts(tree, (context) => {
@@ -567,15 +628,22 @@ function multilineMatchCase(context: ParserRuleContext): boolean {
   return Boolean(matchCase && match && matchCase.start.line !== matchCase.stop?.line && match.start.line !== match.stop?.line);
 }
 
+function multilineChoiceAlternative(context: ParserRuleContext): boolean {
+  return ancestors(context).some((parent) =>
+    (parent instanceof ActionAnyContext || parent instanceof OrExprContext)
+      && parent.start.line !== parent.stop?.line);
+}
+
 function callWrapForContext(
   context: OperAppContext | DotCallContext,
   tokens: Token[],
   sourceLines: string[],
   indentWidth: number,
   maximumLength: number,
+  clauseAlignment: Required<FormatOptions>["clauseAlignment"],
 ): CallWrap | null {
   const argList = context.argList();
-  if (!argList || !multilineMatchCase(context)) return null;
+  if (!argList || !(multilineMatchCase(context) || (clauseAlignment === "full" && multilineChoiceAlternative(context)))) return null;
   const arguments_ = argList.expr();
   if (arguments_.length < 2 || context.start.line !== context.stop?.line) return null;
   const line = context.start.line - 1;
@@ -608,11 +676,12 @@ function callWrapForContext(
   return { line, lines: rendered, depth: callDepth(context) };
 }
 
-function wrapOversizedMatchCalls(
+function wrapOversizedCalls(
   lines: string[],
   barriers: boolean[],
   indentWidth: number,
   maximumLength: number,
+  clauseAlignment: Required<FormatOptions>["clauseAlignment"],
 ): { lines: string[]; barriers: boolean[]; changed: boolean } {
   const source = `${lines.join("\n")}\n`;
   const parsed = parse(source);
@@ -620,7 +689,7 @@ function wrapOversizedMatchCalls(
   const candidates: CallWrap[] = [];
   visitContexts(parsed.tree, (context) => {
     if (context instanceof OperAppContext || context instanceof DotCallContext) {
-      const candidate = callWrapForContext(context, parsed.tokens, lines, indentWidth, maximumLength);
+      const candidate = callWrapForContext(context, parsed.tokens, lines, indentWidth, maximumLength, clauseAlignment);
       if (candidate) candidates.push(candidate);
     }
   });
@@ -1140,6 +1209,10 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
   try {
     const parsed = parse(source);
     if (parsed.diagnostics.length) return { ok: false, formatted: null, diagnostics: parsed.diagnostics };
+    if (settings.alignment === "local" && settings.clauseAlignment === "full") {
+      const expanded = expandFullAlternatives(source, parsed.tree, parsed.tokens, settings.maxLineLength);
+      if (expanded !== source) return format(expanded, options);
+    }
     const lines = makeLines(source, parsed.tokens);
     const conditionals = conditionalFrames(parsed.tree, parsed.tokens);
     const fluent = fluentContinuations(parsed.tree, parsed.tokens);
@@ -1406,11 +1479,12 @@ export function format(source: string, options: FormatOptions = {}): FormatResul
         settings.indentWidth,
         settings.maxLineLength,
       );
-      const wrappedCalls = wrapOversizedMatchCalls(
+      const wrappedCalls = wrapOversizedCalls(
         wrappedConditionals.lines,
         wrappedConditionals.barriers,
         settings.indentWidth,
         settings.maxLineLength,
+        settings.alignment === "local" ? settings.clauseAlignment : "off",
       );
       layout = alignLayout(wrappedCalls);
       if (pass > 0 && !wrappedConditionals.changed && !wrappedCalls.changed) break;

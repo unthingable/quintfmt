@@ -75,13 +75,13 @@ format(source, {
 | Option | Values | Default | Meaning |
 | --- | --- | --- | --- |
 | `indentWidth` | positive integer | `2` | Spaces used for block indentation. |
-| `maxLineLength` | positive integer | `100` | Target width for supported wrapping. Long definition parameter lists, comment-free multi-argument calls in multiline match arms, and eligible oversized inline conditionals wrap into multiple lines. Indivisible tokens and unsupported expression shapes may exceed it. |
+| `maxLineLength` | positive integer | `100` | Target width for supported wrapping. Long definition parameter lists, comment-free multi-argument calls in multiline match arms or `full`-mode `any`/block-`or` alternatives, and eligible oversized inline conditionals wrap into multiple lines. Indivisible tokens and unsupported expression shapes may exceed it. |
 | `matchArmBodies` | `compact`, `block` | `block` | Controls inline match arms whose right-hand expression is already multiline. `block` breaks after `=>` and indents the expression as the arm body; `compact` keeps the expression attached to `=>`. Explicitly broken arms remain broken in either mode. |
 | `alignment` | `local`, `off` | `local` | Enables or disables all local alignment. |
 | `declarationAlignment` | `types`, `columns`, `off` | `types` | Controls alignment within consecutive `const`/`var` groups. |
 | `recordAlignment` | `local`, `off` | `local` | Controls local alignment of record fields, values, and map entries. |
 | `recordMaxAlignmentPadding` | positive integer, `unlimited` | `unlimited` | Maximum record-field and map-entry padding. With a finite cap, oversize labels extend right while the ordinary rows stay aligned. |
-| `clauseAlignment` | `off`, `operator`, `full` | `operator` | Controls layout and alignment of compatible action and Boolean clauses. `full` also aligns an unbarred first multiline sum-type variant with its `|`-prefixed siblings. |
+| `clauseAlignment` | `off`, `operator`, `full` | `operator` | Controls layout and alignment of compatible action and Boolean clauses. With local alignment enabled, `full` expands an over-width, single-line sum type into one variant per line; short sum types stay on one line. It also puts comment-free `any`/block-`or` alternatives on separate lines and aligns an unbarred first multiline sum-type variant with its `|`-prefixed siblings. |
 | `maxAlignmentPadding` | positive integer | `16` | Maximum spaces added before a column. The formatter splits a local group rather than creating an excessive gap. |
 | `definitionSpacing` | `nontrivial`, `compact` | `nontrivial` | Adds one blank line after a comment-led, trailing-comment, or multiline module-level definition. |
 | `blankLinePolicy` | `preserve`, `single` | `preserve` | Preserves authored runs of blank lines, or normalizes each run to one line. |
@@ -152,6 +152,15 @@ val witness =
       observation.phase == OutcomeRecorded
   and state.live        == SciDriftedSnapshot
 ```
+
+In `full` mode, a single-line sum type stays on one line when it fits within
+`maxLineLength`; when it exceeds the limit, its variants are expanded one per
+line. Alternatives in comment-free `any { ... }` and block `or { ... }` groups
+are written one per line regardless of total width. Comment-bearing groups are
+not forcibly expanded, to protect comment placement. The width limit also
+applies within an individual alternative: supported comment-free long calls
+wrap when needed. Indivisible tokens and expression shapes without a supported
+wrap strategy may still exceed the limit.
 
 ## Definition spacing
 
